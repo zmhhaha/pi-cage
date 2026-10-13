@@ -4,13 +4,13 @@
 
 Pi has no built-in sandbox — by design, its `bash` tool runs commands with the permissions of whatever account started it. `pi-cage` takes the position that **the container is the boundary**: no Docker socket, no host paths, no `hostexec`, no cluster credentials. The agent gets a workspace and a network policy, and nothing else.
 
-> ### ⚠️ Status: pre-alpha, first successful build
+> ### ⚠️ Status: pre-alpha, container verified on ARM64
 >
-> **`linux/arm64` builds end to end (2026-10-13). No image is published anywhere yet.**
+> **`linux/arm64` builds end to end (2026-10-13), and [`./verify-hardening.sh`](verify-hardening.sh) passes every check against the built image.** No image is published anywhere yet.
 >
-> **Verified so far:** the ARM64 build completes, `ttyd` is downloaded and SHA-256 verified, Pi installs from npm, and the build-time gates in [`docker/assert-image.sh`](docker/assert-image.sh) pass — Node version, `pi` on `PATH`, and every `ttyd` flag `serve` depends on.
+> **Verified so far:** the ARM64 build completes; `ttyd` is downloaded and SHA-256 verified; Pi installs from npm; the build-time gates in [`docker/assert-image.sh`](docker/assert-image.sh) pass; and the container-level hardening claims hold on a real container — read-only root filesystem, all capabilities dropped, no-new-privileges, **no Docker socket, no host paths**, and all four fail-closed refusals.
 >
-> **Not yet verified:** every hardening claim below, until you run [`./verify-hardening.sh`](verify-hardening.sh) against the built image. This container has never run a real workload and has never been attacked. [THREAT-MODEL.md](THREAT-MODEL.md) records what is not defended at all.
+> **Not yet verified:** the Kubernetes network boundary ([`verify-network-boundary.sh`](verify-network-boundary.sh)) has not been run against a cluster, and this container has never run a real workload or been attacked. [THREAT-MODEL.md](THREAT-MODEL.md) records what is not defended at all. See [docs/verification-log.md](docs/verification-log.md) for what was checked, when, and on what.
 
 
 ---
@@ -214,6 +214,7 @@ Preflight refuses to produce a verdict at all if the cluster's policy no longer 
 | [docs/prior-art.md](docs/prior-art.md) | The 2026-10 competitive survey this design came from. |
 | [verify-hardening.sh](verify-hardening.sh) | Container-level checks: image vs run configuration, plus the refusals. |
 | [verify-network-boundary.sh](verify-network-boundary.sh) | Kubernetes boundary checks, probed from inside the real container. |
+| [docs/verification-log.md](docs/verification-log.md) | What has actually been checked, on what, and when — including what has **not**. |
 
 
 ---
