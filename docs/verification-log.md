@@ -60,16 +60,120 @@ Comment lines are now stripped before every static check.
 
 ---
 
+## 2026-10-13 — Kubernetes, 6-node ARM64 cluster (Calico)
+
+Deployed to a real cluster for the first time. This run found **three defects
+that no amount of local review would have caught**, all of them in the shipped
+manifests or entrypoint rather than in the container hardening.
+
+### Getting to Running
+
+| Step | Result |
+|---|---|
+| `kubectl apply -k deploy/k8s` | ✅ namespace, ServiceAccount, Service, 2×PVC, Deployment, 3×NetworkPolicy |
+| Pod scheduled | ❌ → ✅ **`storageClassName: standard` hard-coded, cluster's default is `ceph-rbd`** |
+| Container started | ❌ → ✅ **`PI_CAGE_PORT` clobbered by a Kubernetes service link** |
+| Pod Ready | ❌ → ✅ **`tcpSocket` probes cannot reach a loopback-only listener** |
+| Final | ✅ `1/1 Running`, Service endpoint `10.244.0.24:7681` |
+
+**1. `storageClassName: standard`.** The PVCs sat `Pending` for ever, so the Pod
+was never scheduled and reported `NODE <none>`. Fixed by omitting
+`storageClassName` so the cluster default applies — hard-coding any class name is
+the same trap. Note PVC `storageClassName` is immutable: fixing it required
+deleting and recreating the (still unbound) claims.
+
+**2. Service links collided with `PI_CAGE_PORT`.** The container crash-looped:
+
+```
+pi-cage: serving /workspace on 127.0.0.1:tcp://10.107.230.100:7681
+ttyd: invalid value for port: tcp://10.107.230.100:7681
+```
+
+Kubernetes injects `<SERVICE>_PORT` for every Service in the namespace. The
+manifest creates a Service named `pi-cage`, so the cluster set `PI_CAGE_PORT` —
+the exact name the entrypoint uses for its listen port. **Guaranteed for anyone
+deploying these manifests.** Fixed with `enableServiceLinks: false`, plus numeric
+validation in `pi-server` so any future injection fails with a message that names
+the cause instead of ttyd's useless one.
+
+**3. `tcpSocket` probes versus a loopback listener.** ttyd was listening
+(`Listening on port: 7681`, auth header / origin check / max-clients all applied)
+but the Pod stayed `0/1 Ready` for ever. A `tcpSocket` probe is opened by the
+kubelet against the **Pod IP**, and `serve` binds `127.0.0.1` on purpose — the
+probe and the security posture are in direct conflict, so it could never succeed.
+All three probes are now exec probes connecting to loopback from inside.
+
+### Network boundary — `verify-network-boundary.sh`, exit code 0
+
+| Section | Result |
+|---|---|
+| Preflight (11 cluster checks) | ✅ 11/11 |
+| Internal + metadata, must be refused | ✅ `kubernetes.default.svc:443`, `192.168.137.101:22`, `169.254.169.254:80` all **DROPPED(timeout)** |
+| Public, smoke test only | ✅ reachable (resolved into fake-ip space, as expected here) |
+| DNS | ✅ cluster name → `10.96.0.1`; public name resolves |
+| Ingress from an unlabelled Pod | ✅ **BLOCKED(timeout)** — an unlabelled Pod in `default` cannot reach the web terminal |
+
+**The hard criterion is the denial direction and it holds.** Preflight confirmed
+`public-egress` omits `198.18.0.0/15` and excludes all six required internal
+ranges, that `default-deny` covers both directions, and that `proxy-ingress`
+requires the `pi-cage-client=true` label.
+
+**One false failure on the first run**, again in the checker: `proxy-ingress`
+label matching expected the Go map rendering `map[pi-cage-client:true]` while
+kubectl produced JSON `{"pi-cage-client":"true"}`. Third instance of the same
+class — *a verifier that has never been run against a real system is just another
+unverified claim.*
+
+### Container, measured on the live Pod
+
+| Check | Result |
+|---|---|
+| uid | ✅ `uid=10001(pi) gid=10001(pi)` |
+| Read-only root filesystem | ✅ `touch /nope` → `Read-only file system` |
+| Writable state | ✅ `/workspace` and `/home/pi` writable |
+| Docker socket | ✅ absent — `/var/run/docker.sock: No such file or directory` |
+| Host paths | ✅ none of `/host`, `/srv`, `/opt`, `/home` from the host in `/proc/mounts` |
+| Pinned Pi version | ✅ `pi --version` → `0.99.2` |
+| Running image | `arm-cluster-master:5000/pi-cage:20261013T060112Z` |
+
+### `serve` composition, exercised directly
+
+Ran the exact command ttyd forks, detached, and captured the pane:
+
+```
+▀▀█  v0.99.2
+█▀ █ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash ·
+/workspace
+```
+
+Process in the pane: `pi`. So `tmux` + `pi` compose correctly inside the
+container.
+
+**Which surfaced a fourth defect:**
+
+```
+fd not found. Downloading...
+```
+
+Pi's `find` tool shells out to `fd`, and when it is missing Pi **downloads a
+binary at runtime** — an unpinned executable fetched on first use, in an image
+whose entire premise is a pinned supply chain. Fixed by installing Debian's
+`fd-find` (binary name `fdfind`, so a symlink provides `fd`) and adding `fd` to
+the required-tools gate in `docker/assert-image.sh`, so a regression fails the
+build rather than silently reintroducing the download.
+
+---
+
 ## Not yet verified
 
 | Claim | Status |
 |---|---|
-| The Kubernetes network boundary | **Never run against a cluster.** `verify-network-boundary.sh` exists and its `--explain` path has been exercised, but no cluster verdict has been recorded. |
 | `linux/amd64` | **Never built.** Only ARM64 has been built. |
 | Multi-arch buildx path (`./build.sh --multiarch`) | **Never run.** |
-| Behaviour under a real workload | **Never run.** No agent session has been executed in this image. |
+| Behaviour under a real workload | **Never run.** No agent has been given a task in this image; only the startup path was exercised. |
 | Behaviour under attack | **Never attempted.** |
-| `serve` mode end to end, through a proxy | **Never run.** `ttyd` + `tmux` + `pi` has not been exercised interactively. |
+| `serve` through a real authenticating proxy, in a browser | **Never run.** The ttyd/tmux/pi composition was verified directly, but no reverse proxy has injected `X-Auth-Request-Email`, and no WebSocket upgrade has crossed the tunnel. |
+| The `fd` fix, on a rebuilt image | **Not yet rebuilt.** Fixed in the Dockerfile; the deployed image predates it. |
 
 ---
 

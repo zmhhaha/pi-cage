@@ -19,13 +19,26 @@ RUN set -eux; \
         bash \
         ca-certificates \
         curl \
+        fd-find \
         git \
         openssh-client \
         passwd \
         ripgrep \
         tini \
         tmux; \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/*; \
+    # Pi's `find` tool shells out to `fd`. Without it Pi prints
+    # "fd not found. Downloading..." and fetches a binary AT RUNTIME -- a network
+    # dependency and a supply-chain hole in an image whose entire premise is
+    # being pinned and reproducible. Observed on a real cluster, 2026-10-13.
+    #
+    # Debian's fd-find package installs the binary as `fdfind` (the name `fd`
+    # collides with another package), so symlink the name Pi looks for. Resolve
+    # the path instead of hard-coding it, and prove the result works here.
+    fdfind_path="$(command -v fdfind || true)"; \
+    [ -n "${fdfind_path}" ] || { echo 'fd-find installed but fdfind is not on PATH' >&2; exit 1; }; \
+    ln -s "${fdfind_path}" /usr/local/bin/fd; \
+    fd --version
 
 # --- ttyd (web terminal for `serve`) ----------------------------------------
 # Deliberately NOT from apt:

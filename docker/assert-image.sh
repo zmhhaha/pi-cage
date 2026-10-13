@@ -38,7 +38,12 @@ for flag in --interface --port --writable --max-clients --check-origin --auth-he
 done
 
 # 4. Tools the modes shell out to.
-for tool in tmux git rg tini; do
+#
+# `fd` is in this list for a specific reason: when it is absent, Pi downloads a
+# binary at runtime ("fd not found. Downloading..."). That would make an image
+# with a pinned supply chain fetch an unpinned executable on first use, so a
+# missing fd must fail the BUILD, not be papered over later.
+for tool in tmux git rg tini fd; do
   command -v "$tool" >/dev/null 2>&1 || fail "${tool} is missing"
 done
 
