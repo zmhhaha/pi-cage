@@ -31,11 +31,19 @@ fail() { printf '  FAIL  %s\n' "$*" >&2; FAILED=1; }
 check() { # check <description> <expected> <actual>
   if [ "$2" = "$3" ]; then pass "$1"; else fail "$1 (expected '$2', got '$3')"; fi
 }
+# Comment lines are stripped before every check. This project documents what it
+# deliberately omits, and a comment that NAMES docker.sock is not a docker.sock
+# mount. The first run of this script failed on exactly that: the static check
+# matched its own explanatory comment while the runtime measurement on the same
+# container correctly reported no socket. Do not "fix" that by deleting the
+# comment.
+compose_code() { grep -v '^[[:space:]]*#' "$COMPOSE"; }
+
 grep_has() { # grep_has <description> <extended-regex>
-  if grep -Eq "$2" "$COMPOSE"; then pass "$1"; else fail "$1 (not found in ${COMPOSE}: $2)"; fi
+  if compose_code | grep -Eq "$2"; then pass "$1"; else fail "$1 (not found in ${COMPOSE}: $2)"; fi
 }
 grep_hasnt() {
-  if grep -Eq "$2" "$COMPOSE"; then fail "$1 (found in ${COMPOSE}: $2)"; else pass "$1"; fi
+  if compose_code | grep -Eq "$2"; then fail "$1 (found in ${COMPOSE}: $2)"; else pass "$1"; fi
 }
 
 command -v docker >/dev/null 2>&1 || { echo 'docker is required' >&2; exit 2; }
@@ -67,6 +75,13 @@ echo
 echo "B. Reference run configuration (${COMPOSE}) -- static"
 # ---------------------------------------------------------------------------
 if [ -f "$COMPOSE" ]; then
+  # Guard against a silent false-green: if comment stripping ever produced (near)
+  # nothing, every grep_hasnt below would pass vacuously and this section would
+  # claim success while checking nothing.
+  if [ "$(compose_code | grep -c .)" -lt 5 ]; then
+    fail "comment stripping left almost no content in ${COMPOSE}; the checks below would pass vacuously"
+  fi
+
   grep_has   'runs as a non-root uid'        '^[[:space:]]*user:[[:space:]]*"?10001:10001'
   grep_has   'read-only root filesystem'     '^[[:space:]]*read_only:[[:space:]]*true'
   grep_has   'drops ALL capabilities'        '^[[:space:]]*-[[:space:]]*ALL[[:space:]]*$'
