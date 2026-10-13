@@ -7,10 +7,39 @@ resources:
   - core.yaml
   - networkpolicy.yaml
 
-# The image is pinned to :latest in core.yaml so a rebuild plus an explicit
-# rollout is required to move it -- `kubectl apply` alone will not roll a
-# Deployment whose Pod template is unchanged. Override here for a release:
+# ---------------------------------------------------------------------------
+# SET THIS BEFORE YOU APPLY.
 #
-# images:
-#   - name: ghcr.io/zmhhaha/pi-cage
-#     newTag: 20261014T000000Z
+# core.yaml references ghcr.io/zmhhaha/pi-cage:latest, which is NOT PUBLISHED.
+# Applying as-is gives you a Deployment, a Service and three NetworkPolicies --
+# and a Pod in ImagePullBackOff. The boundary policies apply fine; the container
+# never starts.
+#
+# This block is the single place to point it somewhere real. The three cases
+# (publish to GHCR / your own registry / the image exists on one node only) are
+# spelled out with commands in deploy/k8s/README.md.
+#
+# The image name is also what makes `:latest` behave: the Pod template in
+# core.yaml does not change between releases, so `kubectl apply` alone will not
+# roll the Deployment. After a rebuild, restart it explicitly:
+#
+#   kubectl -n pi-cage rollout restart deployment/pi-cage
+# ---------------------------------------------------------------------------
+images:
+  - name: ghcr.io/zmhhaha/pi-cage
+    # newName: my-registry.local:5000/pi-cage
+    # newTag: "20261013T060112Z"
+    newTag: latest
+
+# If your image exists only on one node (built locally, never pushed), pin the
+# Pod there or the scheduler will place it somewhere that cannot pull it.
+#
+# Note the ~1 escaping: a "/" in a JSON-patch path must be written "~1", so
+# kubernetes.io/hostname becomes kubernetes.io~1hostname.
+#
+# patches:
+#   - target: { kind: Deployment, name: pi-cage }
+#     patch: |-
+#       - op: add
+#         path: /spec/template/spec/nodeSelector/kubernetes.io~1hostname
+#         value: the-node-with-the-image

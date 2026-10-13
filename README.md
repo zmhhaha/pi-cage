@@ -42,6 +42,8 @@ Kubernetes:
 kubectl apply -k deploy/k8s
 ```
 
+> ⚠️ **No image is published.** `deploy/k8s/core.yaml` references `ghcr.io/zmhhaha/pi-cage:latest`, which does not exist, so applying as-is leaves the Pod in `ImagePullBackOff` — the Deployment and the three NetworkPolicies are created, and nothing runs. Point [`deploy/k8s/kustomization.yaml`](deploy/k8s/kustomization.yaml) at an image your nodes can pull first; the three cases and their exact commands are in [deploy/k8s/README.md](deploy/k8s/README.md).
+
 ---
 
 ## Why this exists
