@@ -173,6 +173,35 @@ Only `linux/amd64` and `linux/arm64` are mapped. Any other architecture fails th
 
 **This is the pattern for any future finding:** the build stops, the reason is written down here, and the fix is pinned rather than floated.
 
+---
+
+## Verifying it
+
+Two scripts, two different claims. Run both before trusting a deployment.
+
+### The container itself
+
+```bash
+./verify-hardening.sh pi-cage:latest
+```
+
+Separates **image** properties (baked in, an operator cannot turn them off) from **run-configuration** properties (applied by `docker-compose.yml` or the Kubernetes manifests). It measures the second kind on a container started with the reference flags, checks statically that the reference file still declares them, and confirms the fail-closed refusals actually refuse.
+
+### The network boundary (Kubernetes only)
+
+```bash
+bash verify-network-boundary.sh --explain    # print the expectation table; touches nothing
+bash verify-network-boundary.sh              # end-to-end; exit 0 is a pass
+bash verify-network-boundary.sh --no-outsider  # skip section 5, which creates a Pod
+```
+
+It probes **from the real container**, not from a throwaway probe Pod, and reads the **cluster's** NetworkPolicies rather than the repository's copy — "committed" is not "loaded".
+
+**The reading rule that matters: "must be refused" is the hard criterion; "must be reachable" is only a smoke test.** This network's router runs a transparent proxy, so *any* public address:port answers `CONNECTED`, including unroutable test ranges. Reachability therefore proves only that the packet left the container. A dropped packet never leaves the node, so the proxy cannot fake it — the denial direction is the real evidence.
+
+Preflight refuses to produce a verdict at all if the cluster's policy no longer matches this script's expectation table, so a green run can't be stale. It also guards the single most expensive mistake available here: `198.18.0.0/15` in the egress `except` list. That range looks like harmless RFC 2544 benchmark space, but this network's fake-ip DNS resolves **every** external name into it — one line, and the entire public internet is excluded, model API included.
+
+> **It does not cover plain Docker.** Compose has no egress control, so on a single Docker host the network boundary is whatever your firewall says. `pi-cage` does not provide one there. A green run of `verify-network-boundary.sh` says nothing about a Compose deployment.
 
 ---
 
@@ -183,6 +212,9 @@ Only `linux/amd64` and `linux/arm64` are mapped. Any other architecture fails th
 | [THREAT-MODEL.md](THREAT-MODEL.md) | Assets, adversaries, what is and is **not** defended. Read this before exposing anything. |
 | [SECURITY.md](SECURITY.md) | How to report a vulnerability. |
 | [docs/prior-art.md](docs/prior-art.md) | The 2026-10 competitive survey this design came from. |
+| [verify-hardening.sh](verify-hardening.sh) | Container-level checks: image vs run configuration, plus the refusals. |
+| [verify-network-boundary.sh](verify-network-boundary.sh) | Kubernetes boundary checks, probed from inside the real container. |
+
 
 ---
 
