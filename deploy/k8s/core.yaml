@@ -74,6 +74,17 @@ spec:
     spec:
       serviceAccountName: pi-cage
       automountServiceAccountToken: false
+      # Do NOT remove this. Kubernetes "service links" inject <SERVICE>_PORT,
+      # <SERVICE>_SERVICE_HOST and friends into every Pod for every Service in
+      # the namespace. The Service below is named pi-cage, so the cluster would
+      # set PI_CAGE_PORT=tcp://<clusterIP>:7681 -- which collides with pi-cage's
+      # own PI_CAGE_PORT setting and made the container crash on startup:
+      #
+      #   ttyd: invalid value for port: tcp://10.107.230.100:7681
+      #
+      # pi-server now also validates the value and fails with a readable error,
+      # but leaving the links off is what keeps it working.
+      enableServiceLinks: false
       # ARM64 is the primary target. Drop this selector if you build for
       # another architecture.
       nodeSelector:

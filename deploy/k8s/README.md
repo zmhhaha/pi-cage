@@ -100,12 +100,13 @@ bash verify-network-boundary.sh             # end-to-end; exit 0 is a pass
 no Pod scheduled, and when the cluster's policies no longer match its expectation
 table. That is deliberate: a green run that was never actually probing anything
 is worse than no run. When there is no Pod it also prints why — which matters,
-because the two common causes need changes in different files:
+because these causes need changes in different files:
 
 | Symptom | Cause | Fix |
 |---|---|---|
 | `phase=Pending`, no `scheduling:` line | A PVC is `Pending` | see *Storage* below |
 | `ImagePullBackOff` / `ErrImagePull` | The image is not pullable | see *the image* above |
+| `CrashLoopBackOff`, log says `ttyd: invalid value for port: tcp://…` | Kubernetes service links set `PI_CAGE_PORT` to the Service's ClusterIP | `core.yaml` sets `enableServiceLinks: false` — **do not remove it** |
 
 ## Storage
 

@@ -23,6 +23,31 @@ AUTH_HEADER="${PI_CAGE_AUTH_HEADER-X-Auth-Request-Email}"
 log() { printf 'pi-cage: %s\n' "$*" >&2; }
 die() { printf 'pi-cage: error: %s\n' "$*" >&2; exit 1; }
 
+# Validate a numeric setting and die loudly instead of handing garbage to ttyd.
+#
+# This is not hypothetical. Kubernetes injects <SERVICE>_PORT=tcp://<clusterIP>:<port>
+# into every Pod in a namespace for every Service in it -- "service links". The
+# shipped manifest creates a Service named pi-cage, so the cluster sets
+# PI_CAGE_PORT, and ttyd's only reaction was:
+#
+#   ttyd: invalid value for port: tcp://10.107.230.100:7681
+#
+# Which points nowhere useful. Two defences, and this is the second one:
+# deploy/k8s/core.yaml sets enableServiceLinks: false, and this check turns any
+# future injection into an error that names its likely cause.
+validate_num() { # validate_num <var-name> <value> <min> <max>
+  case "$2" in
+    ''|*[!0-9]*)
+      die "${1} is not a number: '$2'
+       If the value looks like tcp://<ip>:<port>, it is a Kubernetes service
+       link: the cluster injects ${1} for a Service of the same name.
+       Set enableServiceLinks: false on the Pod, or rename the Service." ;;
+  esac
+  if [ "$2" -lt "$3" ] || [ "$2" -gt "$4" ]; then
+    die "${1} is out of range: $2 (expected $3-$4)"
+  fi
+}
+
 usage() {
   cat >&2 <<'EOF'
 pi-cage — an isolation-first container for the Pi coding agent
@@ -80,6 +105,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -d "$WORKDIR" ] || die "workdir ${WORKDIR} does not exist; mount a volume there"
+
+validate_num PI_CAGE_PORT "${PORT}" 1 65535
+validate_num PI_CAGE_MAX_CLIENTS "${PI_CAGE_MAX_CLIENTS:-1}" 1 1024
 
 # --- fail-closed checks -----------------------------------------------------
 case "$BIND" in
