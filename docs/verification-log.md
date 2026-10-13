@@ -164,16 +164,41 @@ build rather than silently reintroducing the download.
 
 ---
 
+### The `fd` fix, confirmed on a rebuilt image
+
+Rebuilt as `arm-cluster-master:5000/pi-cage:20261013T161134Z` and rolled out.
+
+| Check | Result |
+|---|---|
+| `fd` on PATH inside the Pod | ✅ `fdfind 8.6.0` |
+| `pi` startup pane | ✅ `▀▀█ v0.99.2` — **no `fd not found. Downloading...` banner** |
+| Boundary re-verified after the rebuild | ✅ `verify-network-boundary.sh` exit code **0** |
+
+The pane also showed, for the first time, the next thing that is genuinely
+untested:
+
+```
+ Warning: No models available. Use /login to log into a provider via OAuth or
+ API key.
+```
+
+That is correct behaviour — no provider credentials have been configured. It
+also means **no model call has ever been made from this image**, which is why
+"behaviour under a real workload" stays on the list below.
+
+---
+
 ## Not yet verified
 
 | Claim | Status |
 |---|---|
+| **Any model call** | **Never made.** The TUI starts and reports "No models available"; no provider credentials are configured and no prompt has been run in this image. |
 | `linux/amd64` | **Never built.** Only ARM64 has been built. |
 | Multi-arch buildx path (`./build.sh --multiarch`) | **Never run.** |
-| Behaviour under a real workload | **Never run.** No agent has been given a task in this image; only the startup path was exercised. |
+| Behaviour under a real workload | **Never run.** No agent has been given a task; only the startup path was exercised. |
 | Behaviour under attack | **Never attempted.** |
 | `serve` through a real authenticating proxy, in a browser | **Never run.** The ttyd/tmux/pi composition was verified directly, but no reverse proxy has injected `X-Auth-Request-Email`, and no WebSocket upgrade has crossed the tunnel. |
-| The `fd` fix, on a rebuilt image | **Not yet rebuilt.** Fixed in the Dockerfile; the deployed image predates it. |
+| `run` / `json` modes | **Never run.** Only `serve` was exercised. |
 
 ---
 
