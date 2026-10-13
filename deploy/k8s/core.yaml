@@ -142,22 +142,45 @@ spec:
               mountPath: /tmp
             - name: run
               mountPath: /run
+          # These MUST be exec probes against loopback, not tcpSocket probes.
+          #
+          # A tcpSocket probe is opened by the kubelet against the POD IP, and
+          # serve mode binds 127.0.0.1 only -- deliberately, because narrowing
+          # the listener is half of "nothing reaches this except the proxy".
+          # A tcpSocket probe therefore can never connect: the Pod runs forever
+          # at 0/1 Ready and the Service never has an endpoint. Measured on a
+          # real cluster, 2026-10-13.
+          #
+          # Node is guaranteed present, and this writes nothing, which matters
+          # under readOnlyRootFilesystem. Loopback is the thing being probed, so
+          # this is also the honest check: it tests what serve actually bound.
+          #
+          # Caveat, unchanged: this proves ttyd is listening, not that `pi` is
+          # alive. If the agent exits, tmux can leave ttyd serving an empty
+          # session. Check `tmux ls` when diagnosing; see README.
           startupProbe:
-            tcpSocket:
-              port: web
+            exec:
+              command: &loopback_probe
+                - node
+                - -e
+                - |
+                  const s = require('net').connect(7681, '127.0.0.1');
+                  s.on('connect', () => { s.destroy(); process.exit(0); });
+                  s.on('error', () => process.exit(1));
+                  s.setTimeout(2000, () => { s.destroy(); process.exit(1); });
             periodSeconds: 5
+            timeoutSeconds: 5
             failureThreshold: 60
           readinessProbe:
-            tcpSocket:
-              port: web
+            exec:
+              command: *loopback_probe
             periodSeconds: 10
-          # NOTE: a TCP probe only proves ttyd is listening, not that `pi` is
-          # alive. If the agent exits, tmux may leave ttyd serving an empty
-          # session. Check `tmux ls` when diagnosing; see README.
+            timeoutSeconds: 5
           livenessProbe:
-            tcpSocket:
-              port: web
+            exec:
+              command: *loopback_probe
             periodSeconds: 30
+            timeoutSeconds: 5
             failureThreshold: 3
       volumes:
         - name: home
