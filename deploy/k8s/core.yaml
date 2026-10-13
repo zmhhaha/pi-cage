@@ -29,7 +29,13 @@ metadata:
   namespace: pi-cage
 spec:
   accessModes: [ReadWriteOnce]
-  storageClassName: standard
+  # storageClassName is deliberately omitted so the CLUSTER's default class is
+  # used. Hard-coding a name here is a trap: a cluster without that class leaves
+  # the PVC Pending for ever, the Pod unschedulable, and the failure looks like a
+  # scheduling problem rather than a storage one. Set it explicitly only if your
+  # cluster has no default class:
+  #
+  #   storageClassName: <your-rbd-class>
   resources:
     requests:
       storage: 5Gi
@@ -42,7 +48,7 @@ metadata:
   namespace: pi-cage
 spec:
   accessModes: [ReadWriteOnce]
-  storageClassName: standard
+  # See the note on pi-cage-home above.
   resources:
     requests:
       storage: 20Gi

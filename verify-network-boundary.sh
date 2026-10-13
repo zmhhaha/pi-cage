@@ -109,6 +109,63 @@ discover_node() {
         -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null || true
 }
 
+# A dead end is not a useful failure mode. When there is no schedulable Pod, say
+# why and what to do about it -- an unschedulable Pod and an unpullable image
+# look identical from the outside ("nothing happened"), and the fixes are in
+# completely different files.
+diagnose_pods() {
+    local rows
+    rows="$(kubectl -n "$NS" get pods -l "app=$DEPLOY" \
+        -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.status.phase}{"|"}{range .status.containerStatuses[*]}{.name}={.state.waiting.reason}{.state.terminated.reason}{" "}{end}{"|"}{.status.conditions[?(@.type=="PodScheduled")].message}{"\n"}{end}' \
+        2>/dev/null || true)"
+
+    if [[ -z "$rows" ]]; then
+        echo "    No Pod with label app=$DEPLOY exists at all."
+        echo "    Nothing is creating one. Check the Deployment:"
+        echo "      kubectl -n $NS describe deploy/$DEPLOY"
+        echo "      kubectl -n $NS get events --sort-by=.lastTimestamp | tail -20"
+        return
+    fi
+
+    local name phase states msg
+    while IFS='|' read -r name phase states msg; do
+        [[ -n "$name" ]] || continue
+        echo "    $name  phase=${phase:-?}  ${states:-<no container status>}"
+        [[ -n "$msg" ]] && echo "      scheduling: $msg"
+
+        case "$states" in
+            *ImagePullBackOff*|*ErrImagePull*|*InvalidImageName*)
+                echo "      -> the node cannot pull that image."
+                echo "         The manifests ship a reference that is NOT published, so this"
+                echo "         is the expected first-run failure. See deploy/k8s/README.md."
+                echo "         Current reference:"
+                echo "           kubectl -n $NS get deploy/$DEPLOY -o jsonpath='{.spec.template.spec.containers[0].image}'"
+                ;;
+            *CreateContainerConfigError*)
+                echo "      -> usually a missing ConfigMap, Secret or volume."
+                ;;
+            *CrashLoopBackOff*)
+                echo "      -> the container starts and exits. Logs:"
+                echo "           kubectl -n $NS logs deploy/$DEPLOY -c $CONTAINER --previous --tail=50"
+                ;;
+        esac
+    done <<< "$rows"
+
+    # Unbound PersistentVolumeClaims block scheduling with an empty nodeName --
+    # which is indistinguishable from "the image cannot be pulled" unless you
+    # look here. Worth checking explicitly.
+    local unbound
+    unbound="$(kubectl -n "$NS" get pvc \
+        -o jsonpath='{range .items[?(@.status.phase!="Bound")]}{.metadata.name}={.status.phase}:{.spec.storageClassName} {end}' \
+        2>/dev/null || true)"
+    if [[ -n "$unbound" ]]; then
+        echo "    Unbound PVC(s): $unbound"
+        echo "      -> set storageClassName in deploy/k8s/core.yaml to a class your"
+        echo "         cluster actually has, or omit it to use the cluster default:"
+        echo "           kubectl get storageclass"
+    fi
+}
+
 NODE="$(discover_node)"
 NODE_IP=""
 NODE_TARGET=""
@@ -163,7 +220,11 @@ fi
 ok "deployment/$DEPLOY exists (ns $NS, container $CONTAINER)"
 
 if [[ -z "$NODE" ]]; then
-    echo "  No Running Pod for deployment/$DEPLOY -- nothing to probe." >&2
+    echo "  No Pod is scheduled for deployment/$DEPLOY, so there is nothing to" >&2
+    echo "  probe. Refusing to report a verdict -- a green run that probed nothing" >&2
+    echo "  is worse than no run." >&2
+    echo >&2
+    diagnose_pods >&2
     exit 1
 fi
 ok "scheduled on $NODE"

@@ -97,9 +97,44 @@ bash verify-network-boundary.sh             # end-to-end; exit 0 is a pass
 ```
 
 `verify-network-boundary.sh` **refuses to report a verdict at all** when there is
-no Running Pod, and when the cluster's policies no longer match its expectation
+no Pod scheduled, and when the cluster's policies no longer match its expectation
 table. That is deliberate: a green run that was never actually probing anything
-is worse than no run.
+is worse than no run. When there is no Pod it also prints why — which matters,
+because the two common causes need changes in different files:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `phase=Pending`, no `scheduling:` line | A PVC is `Pending` | see *Storage* below |
+| `ImagePullBackOff` / `ErrImagePull` | The image is not pullable | see *the image* above |
+
+## Storage
+
+**`storageClassName` is deliberately omitted** from both PVCs in `core.yaml`, so
+the cluster's default StorageClass is used. Hard-coding a class name — even a
+common-looking one like `standard` — is a trap: on a cluster without that class
+the PVC stays `Pending` for ever, the Pod never gets scheduled, and the failure
+presents as a scheduling problem rather than a storage one.
+
+Single-writer volumes, so `ReadWriteOnce` on both. That is correct: one Pod owns
+each, and the Deployment uses `strategy: Recreate` so two never contend.
+
+Check what you have:
+
+```bash
+kubectl get storageclass
+kubectl -n pi-cage get pvc
+```
+
+If your cluster has **no default** StorageClass, name one explicitly:
+
+```yaml
+# deploy/k8s/core.yaml, in both PVC specs
+spec:
+  storageClassName: your-rbd-class
+```
+
+If you need the two Pods to share a workspace (you do not, in the default
+single-container design), that requires a `ReadWriteMany` class instead.
 
 ## Reaching the web terminal
 
