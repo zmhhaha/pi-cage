@@ -13,10 +13,6 @@ ARG PI_PACKAGE=@earendil-works/pi-coding-agent@0.99.2
 ARG NPM_REGISTRY=https://registry.npmjs.org
 
 # --- runtime tooling --------------------------------------------------------
-# ttyd serves `serve` mode. Debian's build has historically lagged upstream, so
-# assert-image.sh below fails the build if a flag we depend on is missing --
-# a silently absent --auth-header or --check-origin would remove an access
-# control rather than break loudly.
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
@@ -28,9 +24,38 @@ RUN set -eux; \
         passwd \
         ripgrep \
         tini \
-        tmux \
-        ttyd; \
+        tmux; \
     rm -rf /var/lib/apt/lists/*
+
+# --- ttyd (web terminal for `serve`) ----------------------------------------
+# Deliberately NOT from apt:
+#   * Debian bookworm has no ttyd package at all. The first real build
+#     (2026-10-13) failed with "Package 'ttyd' has no installation candidate";
+#     it only appears in later Debian suites.
+#   * Distribution builds lag on the flags `serve` needs, and a missing
+#     --auth-header or --check-origin removes an access control instead of
+#     breaking loudly.
+#
+# So: upstream static release, PINNED BY DIGEST rather than by tag. Fetching the
+# release's own SHA256SUMS from the same origin would only catch corruption, not
+# tampering -- the digests below are the actual pin. They are transcribed from
+# https://github.com/tsl0922/ttyd/releases/download/1.7.7/SHA256SUMS
+# Update TTYD_VERSION and both digests together, never separately.
+ARG TTYD_VERSION=1.7.7
+ARG TTYD_SHA256_ARM64=b38acadd89d1d396a0f5649aa52c539edbad07f4bc7348b27b4f4b7219dd4165
+ARG TTYD_SHA256_AMD64=8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+        arm64) asset="ttyd.aarch64"; want="${TTYD_SHA256_ARM64}" ;; \
+        amd64) asset="ttyd.x86_64";  want="${TTYD_SHA256_AMD64}" ;; \
+        *) echo "pi-cage: no ttyd asset mapped for architecture ${arch}" >&2; exit 1 ;; \
+    esac; \
+    url="https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/${asset}"; \
+    curl -fsSL --retry 3 --retry-delay 2 -o /usr/local/bin/ttyd "${url}"; \
+    echo "${want}  /usr/local/bin/ttyd" | sha256sum -c -; \
+    chmod 0755 /usr/local/bin/ttyd; \
+    ttyd --version
 
 # --- Pi coding agent (exact version, no lifecycle scripts) ------------------
 # build.sh refuses to pass anything but an exact version. Pi needs no install

@@ -134,7 +134,25 @@ docker inspect pi-cage --format '{{range .Mounts}}{{.Source}} {{end}}'  # no doc
 - `ttyd` is missing any flag `serve` relies on,
 - Pi is not pinned to an exact version.
 
-The last two matter: a distribution `ttyd` without `--auth-header` or `--check-origin` would silently drop an access control, and an unpinned Pi would let a rebuild change the CLI contract underneath you.
+The last two matter: a `ttyd` without `--auth-header` or `--check-origin` would silently drop an access control, and an unpinned Pi would let a rebuild change the CLI contract underneath you.
+
+### Where `ttyd` comes from (and why not `apt`)
+
+The first real build, on 2026-10-13, failed at step 5:
+
+```
+Package ttyd is not available, but is referred to by another package.
+E: Package 'ttyd' has no installation candidate
+```
+
+**Debian bookworm has no `ttyd` package.** It only appears in later Debian suites. So the Dockerfile installs the upstream static release from [`tsl0922/ttyd`](https://github.com/tsl0922/ttyd) instead — **pinned by SHA-256 digest**, not by version tag, and verified with `sha256sum -c` during the build.
+
+The digests live as `ARG`s next to `TTYD_VERSION` in the Dockerfile. Fetching the release's own `SHA256SUMS` from the same origin would only catch a corrupted download, never a tampered one — the transcribed digests are the actual pin. **Update `TTYD_VERSION` and both architecture digests as a set.**
+
+Only `linux/amd64` and `linux/arm64` are mapped. Any other architecture fails the build with an explicit message rather than silently producing an image without `serve` mode.
+
+**This is the pattern for any future finding:** the build stops, the reason is written down here, and the fix is pinned rather than floated.
+
 
 ---
 
