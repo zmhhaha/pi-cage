@@ -1,0 +1,104 @@
+# The network boundary. Adjust the CIDRs to your cluster before applying.
+#
+# Design: deny internal ranges by DESTINATION ADDRESS and let the public
+# internet through. Pi needs to reach model APIs, package registries and git;
+# it must not reach your cluster, your nodes, or the cloud metadata service.
+#
+# Why address-based rather than an egress proxy:
+#   * Pod CIDR and Service CIDR normally sit inside 10.0.0.0/8, so cluster
+#     Services become unreachable without needing a hostname policy.
+#   * A public DNS name that resolves or redirects to an internal address is
+#     also denied, because the rule matches the resolved destination.
+#
+# WARNING -- do not add 198.18.0.0/15 to the except list. It looks like RFC 2544
+# benchmark space and therefore "safe to exclude", but networks running
+# OpenClash/Clash fake-ip DNS resolve EVERY external name into that range.
+# Listing it excludes the entire public internet. Measured the hard way on a
+# real cluster.
+---
+# Deny everything, in both directions, then open exactly what is needed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: pi-cage
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# Ingress comes only from a source that carries this label. That is your
+# authenticating proxy or ingress controller -- label it deliberately:
+#
+#   kubectl -n <proxy-ns> label pod <proxy-pod> pi-cage-client=true
+#
+# Nothing else in the cluster can reach the web terminal.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: proxy-ingress
+  namespace: pi-cage
+spec:
+  podSelector:
+    matchLabels:
+      role: cage
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              pi-cage-client: "true"
+      ports:
+        - protocol: TCP
+          port: 7681
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: public-egress
+  namespace: pi-cage
+spec:
+  podSelector:
+    matchLabels:
+      role: cage
+  policyTypes: [Egress]
+  egress:
+    # DNS. Without this nothing resolves, including the model API.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Public internet, every internal range excluded.
+    #
+    # No port restriction: package managers, VCS and language toolchains pick
+    # their own ports. Narrow this to 443/22 if your workflow allows -- it
+    # meaningfully reduces exfiltration surface, at the cost of `apt`/`npm`
+    # being unable to reach mirrors on other ports.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8          # cluster Pod and Service CIDRs
+              - 172.16.0.0/12       # private
+              - 192.168.0.0/16      # private, and most home lab node IPs
+              - 127.0.0.0/8         # loopback
+              - 169.254.0.0/16      # link-local, INCLUDING cloud metadata
+              - 100.64.0.0/10       # CGNAT
+              - 0.0.0.0/8           # "this network"
+              - 224.0.0.0/4         # multicast
+              - 240.0.0.0/4         # reserved
+              - 192.0.0.0/24        # IETF protocol assignments
+              - 192.88.99.0/24      # 6to4 relay, deprecated
+              - 255.255.255.255/32  # broadcast
+      ports:
+        - protocol: TCP
+# IPv6 is NOT covered: ipBlock is IPv4 only. Confirm your nodes have no IPv6
+# egress, or add equivalent rules.

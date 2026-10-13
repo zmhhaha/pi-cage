@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: pi-cage
+
+resources:
+  - core.yaml
+  - networkpolicy.yaml
+
+# The image is pinned to :latest in core.yaml so a rebuild plus an explicit
+# rollout is required to move it -- `kubectl apply` alone will not roll a
+# Deployment whose Pod template is unchanged. Override here for a release:
+#
+# images:
+#   - name: ghcr.io/zmhhaha/pi-cage
+#     newTag: 20261014T000000Z

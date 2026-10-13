@@ -1,0 +1,174 @@
+# pi-cage on Kubernetes.
+#
+# Namespace, identity, storage, workload and Service. NetworkPolicy lives in
+# networkpolicy.yaml because it is the boundary and deserves its own file.
+#
+# Replace the image reference with your own build. No image is published yet.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pi-cage
+---
+# No token, no RBAC bindings. The agent must never be able to talk to the API
+# server: it executes model-authored commands, so cluster credentials in this
+# Pod would be a privilege-escalation primitive.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pi-cage
+  namespace: pi-cage
+automountServiceAccountToken: false
+---
+# Pi configuration, credentials (auth.json) and session transcripts (plain
+# JSONL). Back this up ENCRYPTED -- it holds provider keys.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pi-cage-home
+  namespace: pi-cage
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 5Gi
+---
+# The agent's working directory. Single writer, so ReadWriteOnce.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pi-cage-workspace
+  namespace: pi-cage
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pi-cage
+  namespace: pi-cage
+spec:
+  replicas: 1
+  # RWO volume: never run two Pods against it at once.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: pi-cage
+  template:
+    metadata:
+      labels:
+        app: pi-cage
+        role: cage
+    spec:
+      serviceAccountName: pi-cage
+      automountServiceAccountToken: false
+      # ARM64 is the primary target. Drop this selector if you build for
+      # another architecture.
+      nodeSelector:
+        kubernetes.io/arch: arm64
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      # Give the agent's running commands a chance to finish, but do not let a
+      # wedged session hold the volume for ever.
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: pi-cage
+          image: ghcr.io/zmhhaha/pi-cage:latest
+          imagePullPolicy: IfNotPresent
+          args: ["serve"]
+          ports:
+            - name: web
+              containerPort: 7681
+          env:
+            - name: TZ
+              value: UTC
+            # Keep the proxy-supplied auth header enabled. The Service is only
+            # reachable through the labelled ingress source in
+            # networkpolicy.yaml, so the header cannot be forged from outside.
+            - name: PI_CAGE_AUTH_HEADER
+              value: X-Auth-Request-Email
+          resources:
+            # State these explicitly. Nothing in this manifest's target cluster
+            # supplies a default quota.
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+              ephemeral-storage: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: home
+              mountPath: /home/pi
+            - name: workspace
+              mountPath: /workspace
+            # readOnlyRootFilesystem requires explicit writable paths. Do not
+            # solve that by turning the read-only root off.
+            - name: tmp
+              mountPath: /tmp
+            - name: run
+              mountPath: /run
+          startupProbe:
+            tcpSocket:
+              port: web
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            tcpSocket:
+              port: web
+            periodSeconds: 10
+          # NOTE: a TCP probe only proves ttyd is listening, not that `pi` is
+          # alive. If the agent exits, tmux may leave ttyd serving an empty
+          # session. Check `tmux ls` when diagnosing; see README.
+          livenessProbe:
+            tcpSocket:
+              port: web
+            periodSeconds: 30
+            failureThreshold: 3
+      volumes:
+        - name: home
+          persistentVolumeClaim:
+            claimName: pi-cage-home
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: pi-cage-workspace
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+        - name: run
+          emptyDir:
+            sizeLimit: 8Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pi-cage
+  namespace: pi-cage
+spec:
+  selector:
+    app: pi-cage
+  ports:
+    # Service port equals container port on purpose: whether an egress or
+    # ingress policy matches before or after Service DNAT depends on the CNI,
+    # and equal values make the rule correct either way.
+    - name: web
+      port: 7681
+      targetPort: web

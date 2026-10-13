@@ -1,0 +1,14 @@
+# Force LF line endings. This project targets Linux containers: a CRLF shell
+# script fails inside the image with `bad interpreter: /usr/bin/env bash^M`.
+#
+# Git for Windows defaults to core.autocrlf=true, so without this file a
+# Windows contributor checks out CRLF scripts and commits them back as CRLF.
+* text=auto eol=lf
+
+# Never normalise binary assets.
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary

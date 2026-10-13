@@ -1,0 +1,16 @@
+# Build outputs: resolved digests and image references. Regenerate with build.sh.
+rendered/
+
+# Local operator configuration. Never commit credentials.
+*.local.env
+build.local.env
+.env
+
+# Default Compose workspace bind mount.
+workspace/
+
+# Editor / OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/

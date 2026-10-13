@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+#
+# pi-cage entrypoint.
+#
+# Three modes, one rule: never widen access by default.
+#   serve  persistent tmux + Pi session behind a web terminal
+#   run    one-shot, final assistant text on stdout
+#   json   one-shot, JSONL event stream on stdout
+#
+# Anything else, call `pi` directly.
+
+set -Eeuo pipefail
+
+readonly SESSION="${PI_CAGE_SESSION:-main}"
+readonly WORKDIR="${PI_CAGE_WORKDIR:-/workspace}"
+
+# Default to loopback. Binding anything else is an explicit decision, checked
+# below.
+BIND="${PI_CAGE_BIND:-127.0.0.1}"
+PORT="${PI_CAGE_PORT:-7681}"
+AUTH_HEADER="${PI_CAGE_AUTH_HEADER-X-Auth-Request-Email}"
+
+log() { printf 'pi-cage: %s\n' "$*" >&2; }
+die() { printf 'pi-cage: error: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat >&2 <<'EOF'
+pi-cage — an isolation-first container for the Pi coding agent
+
+  pi-server serve [--bind ADDR] [--port N]   persistent session + web terminal
+  pi-server run  <prompt...>                 one-shot; final text on stdout
+  pi-server json <prompt...>                 one-shot; JSONL events on stdout
+  pi-server help
+
+Environment:
+  PI_CAGE_BIND           bind address for serve (default 127.0.0.1)
+  PI_CAGE_PORT           port for serve (default 7681)
+  PI_CAGE_WORKDIR        working directory (default /workspace)
+  PI_CAGE_SESSION        tmux session name (default main)
+  PI_CAGE_MAX_CLIENTS    concurrent web terminal clients (default 1)
+  PI_CAGE_AUTH_HEADER    header the fronting proxy must inject
+                         (default X-Auth-Request-Email; empty disables)
+  PI_CAGE_ALLOW_PUBLIC   set to 1 to allow a non-loopback bind
+
+Serve mode binds loopback and requires an auth header. Both are fail-closed
+defaults, not bugs. See THREAT-MODEL.md.
+EOF
+}
+
+cmd="${1:-serve}"
+shift || true
+
+case "$cmd" in
+  help|-h|--help)
+    usage
+    exit 0
+    ;;
+  run)
+    [ "$#" -gt 0 ] || die 'run needs a prompt'
+    exec pi --print "$@"
+    ;;
+  json)
+    [ "$#" -gt 0 ] || die 'json needs a prompt'
+    exec pi --mode json "$@"
+    ;;
+  serve)
+    ;;
+  *)
+    usage
+    die "unknown command: ${cmd}"
+    ;;
+esac
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --bind) BIND="${2:?--bind needs a value}"; shift 2 ;;
+    --port) PORT="${2:?--port needs a value}"; shift 2 ;;
+    *) die "unknown serve option: $1" ;;
+  esac
+done
+
+[ -d "$WORKDIR" ] || die "workdir ${WORKDIR} does not exist; mount a volume there"
+
+# --- fail-closed checks -----------------------------------------------------
+case "$BIND" in
+  127.0.0.1|::1|localhost)
+    ;;
+  *)
+    [ "${PI_CAGE_ALLOW_PUBLIC:-0}" = "1" ] || die \
+      "refusing to bind ${BIND}:${PORT}.
+       pi-cage binds loopback by default. Put an authenticating proxy in front,
+       or set PI_CAGE_ALLOW_PUBLIC=1 if you genuinely intend to expose this."
+    [ -n "$AUTH_HEADER" ] || die \
+      "refusing to bind ${BIND}:${PORT} with authentication disabled.
+       A terminal on an open port is a shell on an open port."
+    log "WARNING: binding ${BIND} -- this container exposes a shell. Confirm the boundary yourself."
+    ;;
+esac
+
+# --- assemble ttyd invocation ----------------------------------------------
+ttyd_args=(
+  --interface "$BIND"
+  --port "$PORT"
+  --cwd "$WORKDIR"
+  --writable
+  --max-clients "${PI_CAGE_MAX_CLIENTS:-1}"
+  --check-origin
+)
+
+if [ -n "$AUTH_HEADER" ]; then
+  # Trust the fronting proxy to have authenticated the request. ttyd is bound
+  # to loopback (or the operator explicitly opted out above), and the
+  # Kubernetes manifests only admit labelled sources, so the header cannot be
+  # forged from outside.
+  ttyd_args+=(--auth-header "$AUTH_HEADER")
+else
+  log "authentication disabled (PI_CAGE_AUTH_HEADER is empty); loopback only"
+fi
+
+cd "$WORKDIR"
+
+log "serving ${WORKDIR} on ${BIND}:${PORT} (session ${SESSION}, max ${PI_CAGE_MAX_CLIENTS:-1} client(s))"
+
+# tmux -A: attach when the session already exists, so a browser reload or a
+# dropped websocket does not kill the agent's session. Do not use ttyd's
+# --once here; that would end the session on disconnect.
+exec ttyd "${ttyd_args[@]}" -- \
+  tmux -u new-session -A -s "$SESSION" -c "$WORKDIR" pi

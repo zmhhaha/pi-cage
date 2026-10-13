@@ -1,0 +1,74 @@
+# Hardened reference deployment.
+#
+# Read this file before changing it. Every hardening flag below is load-bearing,
+# and what is DELIBERATELY ABSENT matters as much as what is present:
+#
+#   * No /var/run/docker.sock. pi-web mounts it on purpose; pi-cage never does.
+#     A Docker socket is root-equivalent on the host.
+#   * No host path bind mounts beyond the workspace you name yourself.
+#   * No --privileged, no host networking, no added capabilities.
+#
+# Usage:
+#   docker compose run --rm pi-cage run "summarise this repository"
+#   PI_CAGE_AUTH_HEADER= docker compose up -d     # loopback web terminal on :7681
+#
+# For anything beyond localhost, put an authenticating proxy in front and leave
+# PI_CAGE_AUTH_HEADER at its default. See README.md and THREAT-MODEL.md.
+
+services:
+  pi-cage:
+    build:
+      context: .
+      args:
+        # Pin these in your fork. build.sh does it with digests and assertions;
+        # `docker compose build` takes the tags as written.
+        NODE_IMAGE: node:24-bookworm-slim
+        PI_PACKAGE: "@earendil-works/pi-coding-agent@0.99.2"
+    image: pi-cage:local
+    command: ["serve"]
+
+    # --- isolation ----------------------------------------------------------
+    user: "10001:10001"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Docker applies its default seccomp profile; do not replace it with
+    # unconfined.
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+      - /run:rw,noexec,nosuid,size=8m
+
+    # --- persistent state ---------------------------------------------------
+    volumes:
+      # Pi configuration, credentials and session transcripts live here.
+      # Back this up encrypted: it contains provider keys.
+      - pi-home:/home/pi
+      # The agent's working directory. Mount the narrowest path that works.
+      - ./workspace:/workspace
+
+    # --- network ------------------------------------------------------------
+    # Loopback only. Removing the 127.0.0.1 prefix exposes a shell -- do not do
+    # it without an authenticating proxy in front, and set the header env var
+    # back to its default if you disabled it.
+    ports:
+      - "127.0.0.1:7681:7681"
+
+    environment:
+      TZ: UTC
+      # Keep the proxy-supplied auth header enabled. Set to empty ONLY for
+      # loopback-only local use.
+      PI_CAGE_AUTH_HEADER: "X-Auth-Request-Email"
+
+    # --- resources ----------------------------------------------------------
+    # No cluster or daemon applies a default quota; state them explicitly.
+    mem_limit: 2g
+    cpus: 1.0
+    pids_limit: 512
+
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+volumes:
+  pi-home:
