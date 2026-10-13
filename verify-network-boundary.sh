@@ -315,10 +315,15 @@ fi
 
 # Do not address the hyphenated label as a jsonpath field (`{.matchLabels.pi-cage-client}`
 # is not portable); read the whole map and match its rendering instead.
+#
+# kubectl renders that map as JSON ({"pi-cage-client":"true"}) at least as often
+# as the Go form (map[pi-cage-client:true]). The first version of this check
+# matched only the latter, so it reported a correctly labelled policy as a
+# failure. Match key and value separately and tolerate both renderings.
 INGRESS_LABELS="$(kubectl -n "$NS" get networkpolicy proxy-ingress \
     -o jsonpath='{.spec.ingress[0].from[0].podSelector.matchLabels}' 2>/dev/null || true)"
 case "$INGRESS_LABELS" in
-    *"pi-cage-client:true"*)
+    *pi-cage-client*true*)
         ok "proxy-ingress admits only pods labelled pi-cage-client=true" ;;
     *)
         bad "proxy-ingress does not require pi-cage-client=true (got '${INGRESS_LABELS:-<none>}') -- anything in the cluster could reach the web terminal" ;;
@@ -446,7 +451,12 @@ for t in "${PUBLIC[@]}"; do
     case "$v" in
         REACHABLE*)
             if [[ "$a" == 198.18.* ]]; then
-                warn "$(printf '%-42s %s  <- resolved into 198.18.0.0/15 (fake-ip); see the except-list rule' "$t" "$v")"
+                # Informational, not a defect. On a Clash/OpenClash fake-ip
+                # network every public name resolves into 198.18.0.0/15 and the
+                # router's transparent proxy answers -- which is exactly why the
+                # except list must OMIT that range. Preflight already proved it
+                # does; this line only tells you the fake-ip is in play.
+                warn "$(printf '%-42s %s  <- fake-ip resolution (198.18.0.0/15); expected on this network, harmless while except omits it' "$t" "$v")"
             else
                 ok "$(printf '%-42s %s  addrs=%s' "$t" "$v" "$a")"
             fi
