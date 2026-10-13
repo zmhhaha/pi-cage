@@ -64,6 +64,11 @@ spec:
   policyTypes: [Egress]
   egress:
     # DNS. Without this nothing resolves, including the model API.
+    #
+    # Two label variants, because distributions disagree: CoreDNS is normally
+    # labelled k8s-app=kube-dns (the name is historical), but some setups use
+    # k8s-app=coredns. `to` is an OR, so listing both is harmless and saves
+    # anyone whose DNS lives under the other label from a silent total outage.
     - to:
         - namespaceSelector:
             matchLabels:
@@ -71,6 +76,12 @@ spec:
           podSelector:
             matchLabels:
               k8s-app: kube-dns
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: coredns
       ports:
         - protocol: UDP
           port: 53
@@ -82,11 +93,25 @@ spec:
     # their own ports. Narrow this to 443/22 if your workflow allows -- it
     # meaningfully reduces exfiltration surface, at the cost of `apt`/`npm`
     # being unable to reach mirrors on other ports.
+    #
+    # ⚠️ THE EXCEPT LIST BELOW IS A TEMPLATE, NOT A UNIVERSAL TRUTH.
+    #
+    # It assumes your Pods and Services live in 10/8, 172.16/12 or 192.168/16.
+    # That is most clusters, but not all -- EKS, GKE and self-hosted setups pick
+    # their own ranges, and any cluster outside those three would be left wide
+    # open while still looking correctly configured.
+    #
+    # Do not reason about it by hand. Ask the script, which reads this cluster's
+    # own Pod CIDRs and Service ClusterIP and tells you if any of them is not
+    # covered:
+    #
+    #   bash verify-network-boundary.sh            # fails if coverage is missing
+    #   bash verify-network-boundary.sh --suggest-excepts   # prints a list that fits
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
             except:
-              - 10.0.0.0/8          # cluster Pod and Service CIDRs
+              - 10.0.0.0/8          # includes most Pod and Service CIDRs
               - 172.16.0.0/12       # private
               - 192.168.0.0/16      # private, and most home lab node IPs
               - 127.0.0.0/8         # loopback
@@ -98,6 +123,10 @@ spec:
               - 192.0.0.0/24        # IETF protocol assignments
               - 192.88.99.0/24      # 6to4 relay, deprecated
               - 255.255.255.255/32  # broadcast
+              # ADD YOUR OWN CLUSTER'S POD / SERVICE CIDRs HERE if they fall
+              # outside the three private ranges above. NEVER add 198.18.0.0/15:
+              # on a Clash/OpenClash fake-ip network every external name resolves
+              # into it, so one line there excludes the entire public internet.
       ports:
         - protocol: TCP
 # IPv6 is NOT covered: ipBlock is IPv4 only. Confirm your nodes have no IPv6

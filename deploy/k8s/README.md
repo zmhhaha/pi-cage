@@ -105,6 +105,7 @@ because these causes need changes in different files:
 | Symptom | Cause | Fix |
 |---|---|---|
 | `phase=Pending`, no `scheduling:` line | A PVC is `Pending` | see *Storage* below |
+| `phase=Pending`, `scheduling:` says the node selector did not match | Architecture or node pin | see *Node selection* below |
 | `ImagePullBackOff` / `ErrImagePull` | The image is not pullable | see *the image* above |
 | `CrashLoopBackOff`, log says `ttyd: invalid value for port: tcp://…` | Kubernetes service links set `PI_CAGE_PORT` to the Service's ClusterIP | `core.yaml` sets `enableServiceLinks: false` — **do not remove it** |
 
@@ -149,13 +150,72 @@ kubectl -n <proxy-namespace> label pod <proxy-pod> pi-cage-client=true
 authenticating proxy — see the README section *Serving it to anyone else*, and
 do not expose the port directly.
 
-## What the NetworkPolicies assume
+## What the NetworkPolicies assume — and how not to get it wrong
 
-`networkpolicy.yaml` denies every internal range by destination address. If your
-cluster uses Pod or Service CIDRs outside `10.0.0.0/8`, `172.16.0.0/12` or
-`192.168.0.0/16`, **add them to the `except` list** — the whole design rests on
-those ranges covering your cluster.
+`networkpolicy.yaml` denies every internal range **by destination address**. The
+whole design rests on the `except` list covering wherever *your* cluster puts its
+Pods and Services.
 
-And never add `198.18.0.0/15`. On a network running Clash/OpenClash fake-ip DNS,
+**The shipped list is a template**, not a universal truth. It carries the three
+private ranges (`10/8`, `172.16/12`, `192.168/16`), which is most clusters — but
+EKS, GKE and plenty of self-hosted setups choose their own, and a cluster outside
+those three would be **left wide open while still looking correctly configured**.
+
+Do not work it out by hand. Ask the script:
+
+```bash
+bash verify-network-boundary.sh --suggest-excepts   # prints a list sized for your cluster
+bash verify-network-boundary.sh                     # fails if coverage is missing
+```
+
+`--suggest-excepts` reads your nodes' `podCIDR` and the `kubernetes` Service
+ClusterIP and prints a ready-to-paste `except` block. If `podCIDR` is empty (some
+CNIs do not populate it), it tells you to look at
+`--cluster-cidr` / `--service-cluster-ip-range` on the controller manager
+instead.
+
+Preflight in `verify-network-boundary.sh` then **tests every one of those
+addresses against the loaded policy** and fails with the exact entries to add.
+That check is the reason this is safe to hand to someone else's cluster: checking
+only that the well-known ranges are present would report a clean boundary on a
+cluster whose `198.19.0.0/16` Pod CIDR was wide open — a silent false green,
+which is worse than a false red.
+
+**Never add `198.18.0.0/15`.** On a network running Clash/OpenClash fake-ip DNS,
 every external name resolves into that range; listing it excludes the entire
-public internet. `verify-network-boundary.sh` fails the run if it finds it.
+public internet, model API included. The script fails the run if it finds it.
+
+## Node selection
+
+`core.yaml` sets **no `nodeSelector`**. An earlier revision pinned
+`kubernetes.io/arch: arm64`, which is silently fatal everywhere else: the Pod sits
+`Pending` with *"didn't match Pod's node affinity/selector"* and reads like a
+capacity problem.
+
+If you build for a single architecture only, add a selector or the scheduler may
+place the Pod on a node that cannot run the image:
+
+```yaml
+# kustomization.yaml
+patches:
+  - target: { kind: Deployment, name: pi-cage }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value: { kubernetes.io/arch: arm64 }
+```
+
+## Different CNIs
+
+`verify-network-boundary.sh` detects the policy engine (Calico, Cilium, Antrea,
+aws-node, kube-router). If yours is not in that list, name it rather than letting
+the script conclude "no boundary":
+
+```bash
+PI_CAGE_POLICY_ENGINE=<daemonset> PI_CAGE_POLICY_ENGINE_NS=<ns> bash verify-network-boundary.sh
+```
+
+Note that **flannel does not implement NetworkPolicy at all** — every policy in
+this directory is inert on a flannel cluster, and no amount of verification will
+change that.
+

@@ -85,10 +85,21 @@ spec:
       # pi-server now also validates the value and fails with a readable error,
       # but leaving the links off is what keeps it working.
       enableServiceLinks: false
-      # ARM64 is the primary target. Drop this selector if you build for
-      # another architecture.
-      nodeSelector:
-        kubernetes.io/arch: arm64
+      # NO nodeSelector by default, on purpose.
+      #
+      # An earlier revision pinned kubernetes.io/arch: arm64 here, which is
+      # silently fatal on every other architecture: the Pod sits Pending with
+      # "didn't match Pod's node affinity/selector" and looks like a scheduling
+      # or capacity problem. The published image is meant to be multi-arch, so
+      # there is nothing to pin to.
+      #
+      # Single-arch builders: add a selector, or the scheduler may place the Pod
+      # on a node whose architecture cannot run the image:
+      #
+      #   nodeSelector:
+      #     kubernetes.io/arch: arm64
+      #
+      # Patches in kustomization.yaml are the tidier place for it.
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001

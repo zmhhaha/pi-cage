@@ -11,7 +11,19 @@
 #     --also-reachable <h:p>  extra target that should be reachable (repeatable)
 #     --no-outsider           skip section 5 (it creates a one-shot Pod)
 #     --explain               print the expectation table and exit; touches nothing
+#     --suggest-excepts       print an except list derived from THIS cluster
 #     --help, -h              this text
+#
+#   Environment:
+#     PI_CAGE_POLICY_ENGINE      override CNI DaemonSet name detection
+#     PI_CAGE_POLICY_ENGINE_NS   namespace of that DaemonSet
+#
+# PORTABILITY
+#
+#   Nothing here is tuned to one cluster. The except list in
+#   deploy/k8s/networkpolicy.yaml is a TEMPLATE: preflight reads this cluster's
+#   own Pod CIDRs and Service ClusterIP and fails if the loaded policy does not
+#   cover them. If it does not, `--suggest-excepts` prints a list that will.
 #
 # WHAT THIS VERIFIES, AND WHAT IT DOES NOT
 #
@@ -43,6 +55,7 @@ NS="${NS:-pi-cage}"
 DEPLOY="${DEPLOY:-pi-cage}"
 CONTAINER="${CONTAINER:-pi-cage}"
 EXPLAIN=0
+SUGGEST=0
 OUTSIDER=1
 ALSO_BLOCKED=()
 ALSO_REACHABLE=()
@@ -56,7 +69,8 @@ while [[ $# -gt 0 ]]; do
         --also-reachable) ALSO_REACHABLE+=("$2"); shift 2 ;;
         --no-outsider) OUTSIDER=0; shift ;;
         --explain) EXPLAIN=1; shift ;;
-        --help|-h) sed -n '2,32p' "$0"; exit 0 ;;
+        --suggest-excepts) SUGGEST=1; shift ;;
+        --help|-h) sed -n '2,48p' "$0"; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -84,11 +98,14 @@ DNS_NAMES=(
     github.com
 )
 
-# The internal ranges the egress policy must exclude, and the one it must never
-# contain. 198.18.0.0/15 looks like safe RFC 2544 benchmark space and is the
-# single most expensive mistake available here: this network's OpenClash fake-ip
-# DNS resolves EVERY external name into that range, so excluding it excludes the
-# entire public internet. Measured the hard way on a sibling cluster.
+# Ranges that every sane except list carries. These are DEFAULTS, not the
+# requirement -- see the cluster-coverage check in preflight, which is the one
+# that actually matters.
+#
+# 198.18.0.0/15 is the single most expensive mistake available here. It looks
+# like harmless RFC 2544 benchmark space, but a network running Clash/OpenClash
+# fake-ip DNS resolves EVERY external name into it -- one line, and the entire
+# public internet is excluded, model API included. Measured the hard way.
 REQUIRED_EXCEPTS=(
     10.0.0.0/8
     172.16.0.0/12
@@ -103,6 +120,47 @@ ok()   { printf '  ok    %s\n' "$1"; }
 bad()  { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
 warn() { printf '  warn  %s\n' "$1"; }
 FAIL=0
+
+# ---------------------------------------------------------------------------
+# IPv4 containment. The except list is a TEMPLATE that has to cover whatever
+# CIDRs THIS cluster puts its Pods and Services in -- which is not knowable in
+# advance and differs between kubeadm, k3s, EKS, GKE, and a home lab. Checking
+# only that the well-known ranges are present would report a clean boundary on a
+# cluster whose 198.19.0.0/16 Pod CIDR is wide open. That is a silent false
+# green, which is worse than a false red.
+# ---------------------------------------------------------------------------
+ip_to_int() { # ip_to_int <a.b.c.d> -> integer, or non-zero exit if malformed
+    local a b c d
+    IFS=. read -r a b c d <<<"$1" || return 1
+    local o
+    for o in "$a" "$b" "$c" "$d"; do
+        case "$o" in ''|*[!0-9]*) return 1 ;; esac
+        [ "$o" -le 255 ] || return 1
+    done
+    echo $(( (a << 24) | (b << 16) | (c << 8) | d ))
+}
+
+cidr_contains() { # cidr_contains <cidr> <ip>
+    local cidr="$1" ip="$2" net bits
+    case "$cidr" in */*) ;; *) return 1 ;; esac
+    net="${cidr%%/*}"; bits="${cidr##*/}"
+    case "$bits" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$bits" -le 32 ] || return 1
+    local n i mask
+    n="$(ip_to_int "$net")" || return 1
+    i="$(ip_to_int "$ip")" || return 1
+    if [ "$bits" -eq 0 ]; then mask=0; else mask=$(( (0xFFFFFFFF << (32 - bits)) & 0xFFFFFFFF )); fi
+    [ $(( n & mask )) -eq $(( i & mask )) ]
+}
+
+covered_by_excepts() { # covered_by_excepts <ip> -> prints the matching except, or empty
+    local ip="$1" c
+    while read -r c; do
+        [ -n "$c" ] || continue
+        if cidr_contains "$c" "$ip"; then printf '%s' "$c"; return 0; fi
+    done <<<"$EXCEPTS"
+    return 1
+}
 
 discover_node() {
     kubectl -n "$NS" get pod -l "app=$DEPLOY" \
@@ -209,6 +267,55 @@ fi
 
 command -v kubectl >/dev/null || { echo 'kubectl is required.' >&2; exit 1; }
 
+# ---------------------------------------------------------------------------
+# --suggest-excepts: print an except list sized for THIS cluster.
+#
+# The shipped networkpolicy.yaml carries a template. It happens to fit clusters
+# whose Pods and Services live in 10/8, 172.16/12 or 192.168/16 -- which is most
+# of them, but not all. Rather than making every reader work out their own CIDRs,
+# ask the cluster.
+# ---------------------------------------------------------------------------
+if [[ "$SUGGEST" == 1 ]]; then
+    echo "=== except list for THIS cluster ==="
+    echo
+    echo "# Derived from the cluster on $(date -u +%Y-%m-%d). CIDRs are widened to"
+    echo "# /16 where that is safe, matching the shipped template's style."
+    echo "            except:"
+    for cidr in "${REQUIRED_EXCEPTS[@]}"; do printf '              - %s\n' "$cidr"; done
+    echo "              - 0.0.0.0/8"
+    echo "              - 224.0.0.0/4"
+    echo "              - 240.0.0.0/4"
+    echo "              - 192.0.0.0/24"
+    echo "              - 192.88.99.0/24"
+    echo "              - 255.255.255.255/32"
+    echo
+    echo "  # From this cluster's own configuration:"
+    found=0
+    while read -r c; do
+        [ -n "$c" ] || continue
+        found=1
+        printf '              - %s    # node Pod CIDR\n' "$c"
+    done < <(kubectl get nodes -o jsonpath='{range .items[*]}{.spec.podCIDR}{"\n"}{end}' 2>/dev/null | sort -u | grep -v '^$' || true)
+    svcip="$(kubectl -n default get svc kubernetes -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
+    case "$svcip" in
+        ''|None) ;;
+        *) found=1
+           printf '              - %s    # covers the kubernetes Service; widen if your Service CIDR is larger\n' \
+               "$(printf '%s' "$svcip" | awk -F. '{print $1"."$2".0.0/16"}')" ;;
+    esac
+    if [[ "$found" == 0 ]]; then
+        echo "              # (could not read podCIDR or the Service ClusterIP)"
+        echo "              # Look at your kube-controller-manager flags instead:"
+        echo "              #   --cluster-cidr and --service-cluster-ip-range"
+        echo "              # On kubeadm: kubectl -n kube-system get pod kube-controller-manager-<node> -o yaml | grep -- --cluster"
+    fi
+    echo
+    echo "  # NEVER add 198.18.0.0/15. On a Clash/OpenClash fake-ip network every"
+    echo "  # external name resolves into it, so excluding it excludes the public"
+    echo "  # internet -- model API included."
+    exit 0
+fi
+
 # ------------------------------------------------------------------ preflight --
 echo "=== 0. preflight ==="
 
@@ -232,19 +339,42 @@ ok "scheduled on $NODE"
 # The policy engine must cover THAT node. A policy is enforced by the node's
 # kubelet/CNI agent; probing on an uncovered node reports everything reachable
 # and looks like a boundary failure when it is really a coverage problem.
-ENGINE=""
-NS_ENG=""
-if kubectl -n kube-system get ds calico-node >/dev/null 2>&1; then
-    ENGINE=calico-node; NS_ENG=kube-system
-elif kubectl -n kube-router get ds kube-router >/dev/null 2>&1; then
-    ENGINE=kube-router; NS_ENG=kube-router
-elif kubectl -n kube-system get ds cilium >/dev/null 2>&1; then
-    ENGINE=cilium; NS_ENG=kube-system
+#
+# Detection covers the engines that actually implement NetworkPolicy. Override
+# with PI_CAGE_POLICY_ENGINE / PI_CAGE_POLICY_ENGINE_NS if yours is not listed --
+# a hard-coded list would otherwise turn "unknown CNI" into "no boundary", which
+# is the wrong conclusion.
+ENGINE="${PI_CAGE_POLICY_ENGINE:-}"
+NS_ENG="${PI_CAGE_POLICY_ENGINE_NS:-}"
+if [[ -z "$ENGINE" ]]; then
+    for candidate in \
+        "kube-system:calico-node" \
+        "kube-system:cilium" \
+        "kube-system:antrea-agent" \
+        "kube-system:aws-node" \
+        "kube-system:azure-cni-networkmonitor" \
+        "kube-router:kube-router" \
+        "kube-system:kube-router"
+    do
+        ns_c="${candidate%%:*}"; ds_c="${candidate##*:}"
+        if kubectl -n "$ns_c" get ds "$ds_c" >/dev/null 2>&1; then
+            ENGINE="$ds_c"; NS_ENG="$ns_c"; break
+        fi
+    done
 fi
 if [[ -z "$ENGINE" ]]; then
-    echo "  No policy engine found (calico-node / kube-router / cilium)." >&2
-    echo "  Without an engine every NetworkPolicy is inert and this script's" >&2
-    echo "  verdicts are meaningless." >&2
+    echo "  No known NetworkPolicy engine found on this cluster." >&2
+    echo "  Looked for: calico-node, cilium, antrea-agent, aws-node," >&2
+    echo "              azure-cni-networkmonitor, kube-router." >&2
+    echo >&2
+    echo "  NOTE: this is not necessarily a failure. Some CNIs implement" >&2
+    echo "  NetworkPolicy under a different name, and flannel does not implement" >&2
+    echo "  it at all. Find yours and name it:" >&2
+    echo "    kubectl get ds -A | grep -iE 'calico|cilium|antrea|weave|kube-router|ovn'" >&2
+    echo "    PI_CAGE_POLICY_ENGINE=<ds-name> PI_CAGE_POLICY_ENGINE_NS=<ns> $0" >&2
+    echo >&2
+    echo "  If your CNI genuinely does not implement NetworkPolicy, every policy" >&2
+    echo "  in deploy/k8s is inert and this script cannot tell you anything." >&2
     exit 1
 fi
 if [[ "$(kubectl -n "$NS_ENG" get pods -l "k8s-app=$ENGINE" \
@@ -297,20 +427,71 @@ for cidr in "${REQUIRED_EXCEPTS[@]}"; do
     grep -qxF "$cidr" <<<"$EXCEPTS" || MISSING+=("$cidr")
 done
 if [[ ${#MISSING[@]} -eq 0 ]]; then
-    ok "public-egress excludes every required internal range"
+    ok "public-egress excludes the customary internal ranges"
 else
-    bad "public-egress except list is missing: ${MISSING[*]}"
+    # Not fatal on its own: what matters is whether THIS cluster's addresses are
+    # covered, which is checked immediately below.
+    warn "public-egress does not list: ${MISSING[*]} (fine only if your cluster has no addresses there)"
+fi
+
+# ---------------------------------------------------------------------------
+# THE CHECK THAT ACTUALLY MATTERS, and the one a hard-coded template misses.
+#
+# The except list has to cover whatever CIDRs this cluster puts its Pods and
+# Services in. Those differ between kubeadm, k3s, kind, EKS, GKE, and a home
+# lab, so a list tuned to one cluster can leave another wide open -- while every
+# check above still passes. Ask the cluster what it actually uses.
+# ---------------------------------------------------------------------------
+CLUSTER_ADDRS=()
+while read -r c; do
+    [ -n "$c" ] || continue
+    # podCIDR is "10.244.0.0/24"; test its network address.
+    CLUSTER_ADDRS+=("${c%%/*}|Pod CIDR on a node")
+done < <(kubectl get nodes -o jsonpath='{range .items[*]}{.spec.podCIDR}{"\n"}{end}' 2>/dev/null | grep -v '^$' || true)
+
+KUBE_SVC_IP="$(kubectl -n default get svc kubernetes -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
+case "$KUBE_SVC_IP" in ''|None) ;; *) CLUSTER_ADDRS+=("${KUBE_SVC_IP}|the kubernetes Service (Service CIDR)") ;; esac
+
+if [[ ${#CLUSTER_ADDRS[@]} -eq 0 ]]; then
+    warn "could not determine this cluster's Pod/Service addresses; cannot prove the except list covers them"
+else
+    UNCOVERED=()
+    for entry in "${CLUSTER_ADDRS[@]}"; do
+        addr="${entry%%|*}"; what="${entry##*|}"
+        if covered_by_excepts "$addr" >/dev/null; then
+            ok "except covers ${what}: ${addr}"
+        else
+            bad "${what} ${addr} is NOT covered by any except entry -- the container can reach your cluster"
+            UNCOVERED+=("$addr")
+        fi
+    done
+    if [[ ${#UNCOVERED[@]} -gt 0 ]]; then
+        echo "      Add these to the except list in deploy/k8s/networkpolicy.yaml:" >&2
+        for u in "${UNCOVERED[@]}"; do
+            # Widen the address to a /16 so one entry covers the neighbourhood,
+            # which is what the shipped template does for 10/8 and friends.
+            echo "        - $(printf '%s' "$u" | awk -F. '{print $1"."$2".0.0/16"}')" >&2
+        done
+        echo "      Then:  kubectl apply -k deploy/k8s" >&2
+    fi
 fi
 
 # If anything grants a cluster-internal destination besides DNS, the expectation
 # table above is stale and a green run would be meaningless.
+#
+# The allowance is 2, not 1, because the shipped policy lists two DNS label
+# variants (k8s-app=kube-dns and k8s-app=coredns) so that a cluster using either
+# still resolves. This check broke the first time that second entry was added --
+# a hard-coded count in a verifier is the same trap as a hard-coded CIDR list.
+# If you add a third cluster-internal grant, raise this deliberately and say why.
+DNS_ENTRIES_EXPECTED=2
 CLUSTER_GRANTS="$(kubectl -n "$NS" get networkpolicy public-egress \
     -o jsonpath='{range .spec.egress[*].to[*]}{.namespaceSelector}{.podSelector}{"\n"}{end}' \
     2>/dev/null | grep -c . || true)"
-if [[ "${CLUSTER_GRANTS:-0}" -le 1 ]]; then
-    ok "public-egress grants no cluster-internal destination beyond DNS"
+if [[ "${CLUSTER_GRANTS:-0}" -le "$DNS_ENTRIES_EXPECTED" ]]; then
+    ok "public-egress grants no cluster-internal destination beyond DNS (${CLUSTER_GRANTS} of ${DNS_ENTRIES_EXPECTED} allowed)"
 else
-    bad "public-egress grants ${CLUSTER_GRANTS} cluster-internal destinations; the expectation table in this script is stale -- update it before trusting a green run"
+    bad "public-egress grants ${CLUSTER_GRANTS} cluster-internal destinations but this script only expects ${DNS_ENTRIES_EXPECTED}; the expectation table is stale -- update it before trusting a green run"
 fi
 
 # Do not address the hyphenated label as a jsonpath field (`{.matchLabels.pi-cage-client}`
