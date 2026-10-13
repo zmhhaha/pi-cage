@@ -4,11 +4,14 @@
 
 Pi has no built-in sandbox — by design, its `bash` tool runs commands with the permissions of whatever account started it. `pi-cage` takes the position that **the container is the boundary**: no Docker socket, no host paths, no `hostexec`, no cluster credentials. The agent gets a workspace and a network policy, and nothing else.
 
-> ### ⚠️ Status: scaffold, pre-alpha
+> ### ⚠️ Status: pre-alpha, first successful build
 >
-> **No image has been published. The build has never been run.**
+> **`linux/arm64` builds end to end (2026-10-13). No image is published anywhere yet.**
 >
-> What exists today is the repository skeleton: Dockerfile, entrypoint, hardened Compose reference, Kubernetes manifests, and the security documents. Everything in this README describes **intended** behaviour. Treat every guarantee below as a claim to be verified, not a fact — the verification steps are listed so you can check them yourself, and [THREAT-MODEL.md](THREAT-MODEL.md) records what is not defended.
+> **Verified so far:** the ARM64 build completes, `ttyd` is downloaded and SHA-256 verified, Pi installs from npm, and the build-time gates in [`docker/assert-image.sh`](docker/assert-image.sh) pass — Node version, `pi` on `PATH`, and every `ttyd` flag `serve` depends on.
+>
+> **Not yet verified:** every hardening claim below, until you run [`./verify-hardening.sh`](verify-hardening.sh) against the built image. This container has never run a real workload and has never been attacked. [THREAT-MODEL.md](THREAT-MODEL.md) records what is not defended at all.
+
 
 ---
 
@@ -18,8 +21,11 @@ Pi has no built-in sandbox — by design, its `bash` tool runs commands with the
 git clone https://github.com/zmhhaha/pi-cage.git
 cd pi-cage
 ./build.sh                       # local single-arch image
+mkdir -p workspace && sudo chown 10001:10001 workspace   # see the bind-mount note
 docker compose run --rm pi-cage run "summarise this repository"
 ```
+
+`docker-compose.yml` has no `build:` key on purpose — `docker compose build` would bypass every digest pin and architecture assertion in `build.sh`. Build first, then compose consumes the image.
 
 Interactive session over a web terminal:
 
@@ -83,25 +89,39 @@ The full competitive survey, with star counts and source links, is in [docs/prio
 
 ## Hardening
 
-Every item is checkable on a running container:
+**Two kinds of claim, and the difference matters.** Some properties are baked into the image; the rest are applied by the run configuration. A bare `docker run` has none of the second kind, so checking them there says nothing about the image.
 
 ```bash
-docker inspect pi-cage --format '{{json .Config.User}}'                 # 10001:10001
-docker inspect pi-cage --format '{{json .HostConfig.ReadonlyRootfs}}'   # true
-docker inspect pi-cage --format '{{json .HostConfig.CapDrop}}'          # ["ALL"]
-docker inspect pi-cage --format '{{json .HostConfig.SecurityOpt}}'      # no-new-privileges:true
-docker inspect pi-cage --format '{{range .Mounts}}{{.Source}} {{end}}'  # no docker.sock, no host paths
+./verify-hardening.sh                    # checks both, and refuses to guess
 ```
 
-| Property | How |
-|---|---|
-| Non-root | `USER 10001:10001`, `runAsNonRoot` in Kubernetes |
-| Read-only root filesystem | `read_only: true`; `/tmp` and `/run` are `noexec,nosuid` tmpfs |
-| No capabilities | `cap_drop: [ALL]` |
-| No privilege escalation | `no-new-privileges:true`, seccomp `RuntimeDefault` |
-| No host access | No Docker socket, no host path mounts, no `hostexec` |
-| Pinned supply chain | Base image pinned by digest, Pi pinned to an exact version, both recorded in `rendered/` |
-| Multi-arch | `linux/amd64` and `linux/arm64` (ARM is the primary target — see below) |
+**Baked into the image** — an operator cannot turn these off:
+
+```bash
+docker image inspect pi-cage:latest --format '{{.Config.User}}'   # 10001:10001
+```
+
+**Applied by the run configuration** — here, `docker-compose.yml`; in a cluster, `deploy/k8s/core.yaml`:
+
+```bash
+docker inspect <container> --format '{{json .HostConfig.ReadonlyRootfs}}'  # true
+docker inspect <container> --format '{{json .HostConfig.CapDrop}}'         # ["ALL"]
+docker inspect <container> --format '{{json .HostConfig.SecurityOpt}}'     # no-new-privileges:true
+docker inspect <container> --format '{{range .Mounts}}{{.Source}} {{end}}' # no docker.sock, no host paths
+```
+
+| Property | Kind | Where |
+|---|---|---|
+| Non-root (`10001:10001`) | image **and** run config | `USER` in the Dockerfile; `user:` / `runAsUser` |
+| No Docker client in the image | image | nothing installs one |
+| Read-only root filesystem | run config | `read_only: true`; `/tmp` and `/run` are `noexec,nosuid` tmpfs |
+| No capabilities | run config | `cap_drop: [ALL]` |
+| No privilege escalation | run config | `no-new-privileges:true`, seccomp `RuntimeDefault` |
+| No host access | run config | No Docker socket, no host path mounts, no `hostexec` |
+| Pinned supply chain | image | Base image pinned by digest, Pi to an exact version, `ttyd` to a SHA-256 — all recorded in `rendered/` |
+| Fail-closed defaults | image | `serve` refuses a non-loopback bind, and refuses a public bind with auth disabled |
+| Multi-arch | image | `linux/amd64` and `linux/arm64` (ARM is the primary target — see below) |
+
 
 ### ARM64 is a first-class target, not an afterthought
 

@@ -8,23 +8,32 @@
 #   * No host path bind mounts beyond the workspace you name yourself.
 #   * No --privileged, no host networking, no added capabilities.
 #
+# There is deliberately NO `build:` key. `docker compose build` would take the
+# base image and Pi version as plain tags and silently skip every architecture
+# assertion and digest pin that build.sh performs. Build with ./build.sh; this
+# file then consumes what it produced.
+#
 # Usage:
+#   ./build.sh                                       # required first
 #   docker compose run --rm pi-cage run "summarise this repository"
-#   PI_CAGE_AUTH_HEADER= docker compose up -d     # loopback web terminal on :7681
+#   PI_CAGE_AUTH_HEADER= docker compose up -d         # loopback web terminal
 #
 # For anything beyond localhost, put an authenticating proxy in front and leave
 # PI_CAGE_AUTH_HEADER at its default. See README.md and THREAT-MODEL.md.
+#
+# Note on the workspace bind mount: a bind mount keeps the HOST directory's
+# ownership, so uid 10001 must be able to write it:
+#
+#   mkdir -p workspace && sudo chown 10001:10001 workspace
+#
+# (The named volume pi-home is unaffected: Docker copies the image's /home/pi
+# ownership into a fresh named volume.)
 
 services:
   pi-cage:
-    build:
-      context: .
-      args:
-        # Pin these in your fork. build.sh does it with digests and assertions;
-        # `docker compose build` takes the tags as written.
-        NODE_IMAGE: node:24-bookworm-slim
-        PI_PACKAGE: "@earendil-works/pi-coding-agent@0.99.2"
-    image: pi-cage:local
+    # Whatever ./build.sh tagged. Override to verify a specific build:
+    #   PI_CAGE_IMAGE=pi-cage:20261013T060112Z docker compose up -d
+    image: ${PI_CAGE_IMAGE:-pi-cage:latest}
     command: ["serve"]
 
     # --- isolation ----------------------------------------------------------
@@ -50,16 +59,21 @@ services:
 
     # --- network ------------------------------------------------------------
     # Loopback only. Removing the 127.0.0.1 prefix exposes a shell -- do not do
-    # it without an authenticating proxy in front, and set the header env var
-    # back to its default if you disabled it.
+    # it without an authenticating proxy in front, and leave the header at its
+    # default if you do.
     ports:
       - "127.0.0.1:7681:7681"
 
     environment:
       TZ: UTC
-      # Keep the proxy-supplied auth header enabled. Set to empty ONLY for
-      # loopback-only local use.
-      PI_CAGE_AUTH_HEADER: "X-Auth-Request-Email"
+      # The proxy-supplied header stays ON by default, and is pass-through from
+      # the shell so that `PI_CAGE_AUTH_HEADER= docker compose up -d` can turn
+      # it off for loopback-only use. A literal value here would override the
+      # shell and silently ignore that.
+      #
+      # `${VAR-default}` (no colon) is deliberate: it applies the default only
+      # when the variable is UNSET, so an explicit empty value stays empty.
+      PI_CAGE_AUTH_HEADER: "${PI_CAGE_AUTH_HEADER-X-Auth-Request-Email}"
 
     # --- resources ----------------------------------------------------------
     # No cluster or daemon applies a default quota; state them explicitly.
