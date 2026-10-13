@@ -186,6 +186,47 @@ That is correct behaviour — no provider credentials have been configured. It
 also means **no model call has ever been made from this image**, which is why
 "behaviour under a real workload" stays on the list below.
 
+### The boundary check now proves coverage, not just presence
+
+The verifier used to confirm that six customary `except` entries were present.
+On this cluster that passed -- but only because its Pod CIDR (`10.244.0.0/16`)
+and Service CIDR (`10.96.0.0/12`) happen to fall inside `10/8`. On a cluster
+using other ranges, the same green run would have meant nothing: a silent false
+green, and the third time this project shipped a check that reported on itself.
+
+It now reads this cluster's own addresses and tests each against the loaded
+policy with real IPv4 containment:
+
+| Check | Result |
+|---|---|
+| Five node Pod CIDRs (`10.244.0.0/24` ... `10.244.4.0/24`) | covered by `10/8` |
+| `kubernetes` Service ClusterIP `10.96.0.1` (Service CIDR) | covered by `10/8` |
+| Cluster-internal grants in `public-egress` | 2 of 2 allowed (the two DNS label variants) |
+| Full run | exit code **0** |
+
+**Negative-tested**, because a check that only ever passes proves nothing. With
+`10/8` removed from a synthetic except list, this cluster's real Pod IP
+(`10.244.0.7`) is correctly reported as **uncovered**; with it present,
+correctly covered. So the check discriminates rather than passing vacuously.
+
+`--suggest-excepts` prints a ready-to-paste block derived from the cluster, for
+anyone whose Pod or Service ranges fall outside the shipped template.
+
+Two portability defects were fixed alongside it, both of the same class as the
+earlier hard-coded `storageClassName`:
+
+- **`nodeSelector: kubernetes.io/arch: arm64`** in `core.yaml` was silently fatal
+  on every other architecture -- `Pending`, with a message that reads like a
+  capacity problem. Removed; single-arch builders add it back via a patch.
+- **The cluster-internal-grant allowance was hard-coded to 1**, so adding the
+  second DNS label variant broke the check. A hard-coded count in a verifier is
+  the same trap as a hard-coded CIDR list.
+
+Engine detection now covers Antrea, `aws-node` and `azure-cni-networkmonitor` as
+well as Calico, Cilium and kube-router, and is overridable with
+`PI_CAGE_POLICY_ENGINE`. The old list turned "unrecognised CNI" into "no
+boundary", which is the wrong conclusion.
+
 ---
 
 ## Not yet verified
