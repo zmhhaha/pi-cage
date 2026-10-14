@@ -56,6 +56,17 @@ TTYD_BASE_URL="${TTYD_BASE_URL:-https://github.com/tsl0922/ttyd/releases/downloa
 # Debian mirror for the in-container apt step. Empty keeps the base image's own
 # sources. Mirrors must serve both `debian` and `debian-security`.
 APT_MIRROR="${APT_MIRROR:-}"
+# Recorded as org.opencontainers.image.revision. Only set when the checkout root
+# IS this directory: `git rev-parse HEAD` walks upwards, so a build run from an
+# unpacked tarball or a copy inside another repository would otherwise record a
+# commit that has nothing to do with this image. Absent is honest; guessed is not.
+GIT_REVISION="${GIT_REVISION:-}"
+if [ -z "$GIT_REVISION" ]; then
+  _top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -n "$_top" ] && [ "$_top" = "$(pwd -P)" ]; then
+    GIT_REVISION="$(git rev-parse HEAD)"
+  fi
+fi
 
 host_arch() { uname -m | sed 's/^x86_64$/amd64/; s/^aarch64$/arm64/'; }
 PLATFORM="${PLATFORM:-linux/$(host_arch)}"
@@ -87,12 +98,20 @@ else
   IMAGE_REF="${IMAGE}"
 fi
 
+# The block below is evaluated before either real path has resolved the base to a
+# digest, so NODE_IMAGE_RESOLVED must have a default here or `set -u` aborts the
+# whole script. Both real paths replace it with the pinned form before building.
+NODE_IMAGE_RESOLVED="${NODE_IMAGE_RESOLVED:-$NODE_IMAGE}"
+
 build_args=(
   --build-arg "NODE_IMAGE=${NODE_IMAGE_RESOLVED:-$NODE_IMAGE}"
   --build-arg "PI_PACKAGE=${PI_PACKAGE}"
   --build-arg "NPM_REGISTRY=${NPM_REGISTRY}"
   --build-arg "TTYD_BASE_URL=${TTYD_BASE_URL}"
   --build-arg "APT_MIRROR=${APT_MIRROR}"
+  --build-arg "GIT_REVISION=${GIT_REVISION}"
+  --build-arg "BASE_IMAGE_NAME=${NODE_IMAGE_RESOLVED%%@*}"
+  --build-arg "BASE_IMAGE_DIGEST=${NODE_IMAGE_RESOLVED##*@}"
 )
 
 if [ "$MULTIARCH" = 1 ]; then
@@ -100,10 +119,13 @@ if [ "$MULTIARCH" = 1 ]; then
   # Multi-arch path. A per-platform digest would break the other platform, so
   # pin the manifest LIST digest instead.
   # ---------------------------------------------------------------------
-  command -v docker >/dev/null
-  docker buildx version >/dev/null 2>&1 || die 'docker buildx is required for --multiarch'
-
+  # Same reasoning as the single-arch path: --dry-run is documented as "print the
+  # plan, touch nothing", and needing a daemon to print a plan is exactly when you
+  # would want to dry-run.
   if [ "$DRY_RUN" = 0 ]; then
+    command -v docker >/dev/null || die 'docker is required'
+    docker buildx version >/dev/null 2>&1 || die 'docker buildx is required for --multiarch'
+
     INDEX_DIGEST="$(docker buildx imagetools inspect "$NODE_IMAGE" --format '{{.Manifest.Digest}}' 2>/dev/null || true)"
     [ -n "$INDEX_DIGEST" ] || die "could not resolve a manifest-list digest for ${NODE_IMAGE}; refusing to build multi-arch from a mutable tag"
     NODE_IMAGE_RESOLVED="${NODE_IMAGE%%:*}@${INDEX_DIGEST}"
@@ -117,7 +139,10 @@ if [ "$MULTIARCH" = 1 ]; then
     --build-arg "PI_PACKAGE=${PI_PACKAGE}"
     --build-arg "NPM_REGISTRY=${NPM_REGISTRY}"
     --build-arg "TTYD_BASE_URL=${TTYD_BASE_URL}"
-  --build-arg "APT_MIRROR=${APT_MIRROR}"
+    --build-arg "APT_MIRROR=${APT_MIRROR}"
+    --build-arg "GIT_REVISION=${GIT_REVISION}"
+    --build-arg "BASE_IMAGE_NAME=${NODE_IMAGE_RESOLVED%%@*}"
+    --build-arg "BASE_IMAGE_DIGEST=${NODE_IMAGE_RESOLVED##*@}"
   )
 
   target="${IMAGE_REF}:${TAG}"
@@ -173,6 +198,9 @@ build_args=(
   --build-arg "NPM_REGISTRY=${NPM_REGISTRY}"
   --build-arg "TTYD_BASE_URL=${TTYD_BASE_URL}"
   --build-arg "APT_MIRROR=${APT_MIRROR}"
+  --build-arg "GIT_REVISION=${GIT_REVISION}"
+  --build-arg "BASE_IMAGE_NAME=${NODE_IMAGE_RESOLVED%%@*}"
+  --build-arg "BASE_IMAGE_DIGEST=${NODE_IMAGE_RESOLVED##*@}"
 )
 
 target="${IMAGE_REF}:${TAG}"
