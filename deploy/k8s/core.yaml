@@ -122,6 +122,36 @@ spec:
           env:
             - name: TZ
               value: UTC
+            # --- why these two exist, and why the default was wrong here ---
+            #
+            # `serve` binds 127.0.0.1 by default and refuses a non-loopback bind
+            # unless PI_CAGE_ALLOW_PUBLIC=1. That default is right for a bare
+            # container. In this Deployment it made the Pod unreachable:
+            #
+            #   bind address .......... 127.0.0.1:7681  (/proc/net/tcp: 0100007F)
+            #   reachable from itself .. yes  (ttyd answered 407 Proxy Auth Required)
+            #   reachable from Pod IP .. no
+            #   docker run -p .......... "Connection reset by peer"
+            #
+            # A Service DNATs to the Pod IP, and a loopback-only listener never
+            # sees that traffic -- so the Service below had an endpoint that could
+            # not accept a connection. Nothing verified this before: every check
+            # inspected the container's properties and none tried to reach it.
+            #
+            # The boundary here is therefore NOT the bind address. It is the two
+            # layers underneath, and both have to hold:
+            #
+            #   1. networkpolicy.yaml `proxy-ingress` admits only sources carrying
+            #      the label pi-cage-client: "true" -- so only your proxy/ingress.
+            #   2. PI_CAGE_AUTH_HEADER makes ttyd require that header on every
+            #      request (an unauthenticated connection gets 407), and the proxy
+            #      is the only thing that can set it.
+            #
+            # If you remove either layer, do not leave ALLOW_PUBLIC set.
+            - name: PI_CAGE_BIND
+              value: 0.0.0.0
+            - name: PI_CAGE_ALLOW_PUBLIC
+              value: "1"
             # Keep the proxy-supplied auth header enabled. The Service is only
             # reachable through the labelled ingress source in
             # networkpolicy.yaml, so the header cannot be forged from outside.
