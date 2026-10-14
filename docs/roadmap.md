@@ -13,53 +13,52 @@ is careful work with 0 stars.
 
 ---
 
-## 1. Publish an image
+## 1. Publish an image — **done, 2026-10-14**
 
-**Why it is first.** Today the quickstart is `git clone` → `./build.sh` → run.
+**Why it was first.** The quickstart was `git clone` → `./build.sh` → run.
 [`pi-less-yolo`](https://github.com/cjermain/pi-less-yolo) gets a user running with
 `mise run pi`; [`pi-dispatch`](https://github.com/edgehero/pi-dispatch) with a
-compose file. Until an image exists, nothing else on this list matters, and the
-Kubernetes manifests stay broken by default.
+compose file. Until an image existed, nothing else on this list mattered.
 
-**Do**
+**Done:** `ghcr.io/zmhhaha/pi-cage` is a multi-arch manifest list — index
+`sha256:897709bd…`, resolving to `amd64` `sha256:cbd3c196…` and `arm64/v8`
+`sha256:b0905fa7…`, tagged `:latest` and `:20261014`. Both were pulled back from
+GHCR and confirmed to resolve to the right architecture on the right host.
 
-```bash
-REGISTRY=ghcr.io/zmhhaha IMAGE=pi-cage ./build.sh --multiarch --push
-```
+The two single-arch images came from different hosts and different mirror sets, so
+equivalence was checked rather than assumed: **127 packages, identical names and
+versions; node v24.21.0 and ttyd 1.7.7 identical; the Pi bundle byte-identical**
+across both. Only the `ttyd` binary differs, and that is the per-architecture pin.
 
-**Acceptance**
-
-- `docker run --rm ghcr.io/zmhhaha/pi-cage:<tag> pi --version` works on both
-  architectures.
-- The `deploy/k8s/kustomization.yaml` default points at it, so
-  `kubectl apply -k deploy/k8s` no longer produces `ImagePullBackOff`.
-
-**Blocked on:** a GHCR account with `write:packages` and a `docker login`. Nobody
-else can do this step.
+**Still open:** the GHCR package is **private** by default. Until its visibility is
+switched to public, a cluster without an `imagePullSecret` cannot pull it — so the
+second acceptance criterion below is not met yet.
 
 ---
 
-## 2. A one-command quickstart
+## 2. A one-command quickstart — **done, 2026-10-14**
 
-**Why.** The README's first screen should be one line a user can paste. Right now
-it is a build from source.
+**Done:** the README's first screen is now a pasteable `docker run` line, and it was
+run verbatim before being written down. Two things came out of actually trying it:
 
-**Depends on 1.**
+- **`--network host` is required**, because `serve` binds loopback and a published
+  port cannot reach a loopback-only listener. This is why the old
+  `docker compose up` line never worked.
+- **`PI_CAGE_AUTH_HEADER=` is required** to turn auth off, and the default is the
+  opposite: the variable is read with `-` rather than `:-`, so unset means the
+  header is *required*. Only an explicit empty value disables it.
 
-**Do**
+**Still open: `docker-compose.yml` is unusable as written.** It publishes
+`127.0.0.1:7681:7681` while the container binds loopback — the same contradiction.
+Two ways out, and it is a real trade-off rather than a typo:
 
-```bash
-docker run --rm -it -v pi-home:/home/pi -v "$PWD:/workspace" \
-  ghcr.io/zmhhaha/pi-cage:latest run "summarise this repository"
-```
+| Option | Gain | Cost |
+|---|---|---|
+| `network_mode: host` | Works today; keeps the loopback bind, publishes nothing | Gives up network-namespace isolation, which `verify-hardening.sh` currently asserts as a hardening property |
+| Bind `0.0.0.0` + `PI_CAGE_ALLOW_PUBLIC=1` + an authenticating proxy | Keeps the namespace; the shape Kubernetes already uses | Needs a proxy for a single-user local setup, and the header requirement cannot be turned off |
 
-…plus the hardened Compose path, which already exists.
-
-**Acceptance**
-
-- Both lines are in the README above the fold and have been run, verbatim, on a
-  clean machine.
-- The `run` line is on this list as item 3 — do not document it before it works.
+Not resolved here on purpose: the first option means weakening a property the
+project advertises, and that should be a decision, not a side effect.
 
 ---
 

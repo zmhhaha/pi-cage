@@ -4,37 +4,59 @@
 
 Pi has no built-in sandbox — by design, its `bash` tool runs commands with the permissions of whatever account started it. `pi-cage` takes the position that **the container is the boundary**: no Docker socket, no host paths, no `hostexec`, no cluster credentials. The agent gets a workspace and a network policy, and nothing else.
 
-> ### ⚠️ Status: pre-alpha, container and network boundary verified
+> ### ⚠️ Status: pre-alpha, published and verified on both architectures
 >
-> **arm64 and amd64 both build end to end, and [`./verify-hardening.sh`](verify-hardening.sh) passes every check on each — 22/22, exit code 0. [`verify-network-boundary.sh`](verify-network-boundary.sh) passes on a real 6-node ARM64 Calico cluster, also exit code 0.** No image is published anywhere yet.
+> **`ghcr.io/zmhhaha/pi-cage:latest` is a multi-arch manifest list** — index `sha256:897709bd…`, resolving to `amd64` `sha256:cbd3c196…` and `arm64/v8` `sha256:b0905fa7…`. Both were pulled back from GHCR and confirmed to resolve per architecture. [`./verify-hardening.sh`](verify-hardening.sh) passes **22/22, exit code 0** on each, and [`verify-network-boundary.sh`](verify-network-boundary.sh) passes on a real 6-node ARM64 Calico cluster. **The GHCR package is private until you change its visibility** — see the quick start.
 >
-> **Verified so far:** both architectures build; `ttyd` is downloaded and SHA-256 verified, and the pin was confirmed against a second transport; Pi installs at an exact pinned version; the build-time gates in [`docker/assert-image.sh`](docker/assert-image.sh) pass; the container hardening holds on a real container — read-only root filesystem, all capabilities dropped, no-new-privileges, **no Docker socket, no host paths**; every internal target and the metadata address are refused from inside the container; an unlabelled Pod cannot reach the web terminal; and all four fail-closed refusals refuse.
+> **Verified so far:** both architectures build; `ttyd` is downloaded and SHA-256 verified, and the pin was confirmed against a second transport; Pi installs at an exact pinned version; the build-time gates in [`docker/assert-image.sh`](docker/assert-image.sh) pass; the container hardening holds on a real container — read-only root filesystem, all capabilities dropped, no-new-privileges, **no Docker socket, no host paths**; every internal target and the metadata address are refused from inside the container; an unlabelled Pod cannot reach the web terminal while a labelled one can, and gets `407` without the auth header; and all four fail-closed refusals refuse.
 >
-> **Not yet verified:** no model call has ever been made from this image, and `serve` has not been exercised through a real authenticating proxy in a browser. [THREAT-MODEL.md](THREAT-MODEL.md) records what is not defended at all; [docs/verification-log.md](docs/verification-log.md) records what was checked, when, and on what.
+> **Not yet verified:** no model call has ever been made from this image (`run` and `json` are unexercised); `serve` has not been driven through a real authenticating proxy in a browser; and `docker-compose.yml` is currently unusable — see the quick start. [THREAT-MODEL.md](THREAT-MODEL.md) records what is not defended at all; [docs/verification-log.md](docs/verification-log.md) records what was checked, when, and on what.
 
 
 ---
 
 ## Quick start
 
-```bash
-git clone https://github.com/zmhhaha/pi-cage.git
-cd pi-cage
-./build.sh                       # local single-arch image
-mkdir -p workspace && sudo chown 10001:10001 workspace   # see the bind-mount note
-docker compose run --rm pi-cage run "summarise this repository"
-```
-
-`docker-compose.yml` has no `build:` key on purpose — `docker compose build` would bypass every digest pin and architecture assertion in `build.sh`. Build first, then compose consumes the image.
-
-Interactive session over a web terminal:
+The image is published as a **multi-arch manifest list**, so one tag serves x86-64
+and ARM64:
 
 ```bash
-PI_CAGE_AUTH_HEADER= docker compose up -d
-# http://127.0.0.1:7681
+mkdir -p workspace && sudo chown 10001:10001 workspace   # see below
+docker run --rm --network host -e PI_CAGE_AUTH_HEADER= \
+  -v "$PWD/workspace:/workspace" \
+  ghcr.io/zmhhaha/pi-cage:latest serve
+# open http://127.0.0.1:7681
 ```
 
-`PI_CAGE_AUTH_HEADER=` disables the proxy-supplied auth header, which is only acceptable because Compose binds to `127.0.0.1`. See [Serving it to anyone else](#serving-it-to-anyone-else).
+Every part of that line is load-bearing, and each was measured rather than
+assumed:
+
+- **`--network host` is not decoration.** `serve` binds `127.0.0.1` *inside* the
+  container and refuses anything else without an explicit opt-in. A **published
+  port cannot reach a loopback-only listener**, because Docker's proxy connects to
+  the container's IP: `docker run -p 127.0.0.1:7681:7681 … serve` fails with
+  `Connection reset by peer`. Sharing the host's network namespace is what makes
+  `127.0.0.1` mean the same address on both sides. **Nothing is published, so
+  nothing is exposed beyond loopback** — that is the whole point of the trade.
+- **`PI_CAGE_AUTH_HEADER=` disables the auth header**, which otherwise defaults to
+  `X-Auth-Request-Email` (the variable is read with `-`, not `:-`, so *unset* means
+  the header is required and only an explicit empty value turns it off). Acceptable
+  only because the bind is loopback and the browser is on the same machine.
+- **`chown 10001:10001` is required**: the container runs as uid `10001` and a bind
+  mount carries the host's ownership. Without it Pi can read your project and
+  cannot write to it.
+
+There is no web terminal in this form:
+
+```bash
+docker run --rm -v "$PWD/workspace:/workspace" \
+  ghcr.io/zmhhaha/pi-cage:latest run "summarise this repository"
+```
+
+> ⚠️ **`run` and `json` have never been executed.** They are documented from
+> upstream's spec, not from a test — no model credential has ever been configured
+> in this image. Tracked in [docs/roadmap.md](docs/roadmap.md). Treat them as
+> unverified until that changes.
 
 Kubernetes:
 
@@ -42,7 +64,20 @@ Kubernetes:
 kubectl apply -k deploy/k8s
 ```
 
-> ⚠️ **No image is published.** `deploy/k8s/core.yaml` references `ghcr.io/zmhhaha/pi-cage:latest`, which does not exist, so applying as-is leaves the Pod in `ImagePullBackOff` — the Deployment and the three NetworkPolicies are created, and nothing runs. Point [`deploy/k8s/kustomization.yaml`](deploy/k8s/kustomization.yaml) at an image your nodes can pull first; the three cases and their exact commands are in [deploy/k8s/README.md](deploy/k8s/README.md).
+> ⚠️ **The GHCR package is private until you change it.** GitHub → the package →
+> *Package settings* → *Change visibility* → *Public*. Until then your nodes cannot
+> pull it without an `imagePullSecret` and the Pod sits in `ImagePullBackOff`.
+> [`deploy/k8s/kustomization.yaml`](deploy/k8s/kustomization.yaml) is the single
+> place to point it at a registry your nodes can reach; the cases and their exact
+> commands are in [deploy/k8s/README.md](deploy/k8s/README.md).
+
+> ⚠️ **`docker-compose.yml` does not work as written.** It publishes
+> `127.0.0.1:7681:7681` while the container binds loopback, which is the same
+> contradiction as above. `docker compose` needs either `network_mode: host` (which
+> gives up the network-namespace isolation that `verify-hardening.sh` currently
+> asserts) or a non-loopback bind plus an authenticating proxy. That is a real
+> trade-off, not a typo, so it is recorded in
+> [docs/roadmap.md](docs/roadmap.md) rather than resolved silently here.
 
 ---
 

@@ -311,16 +311,102 @@ stopped afterwards.
 
 ---
 
+## 2026-10-14 — Published to GHCR, and the reference Pod was unreachable
+
+Two things happened in this stretch: the image was published, and then trying to
+reach it found that **the reference Kubernetes manifest produced a Pod nothing
+could connect to.**
+
+### Multi-arch manifest list
+
+`ghcr.io/zmhhaha/pi-cage`, index `sha256:897709bdb3f6a123fd3acd5da3f02f9491a217f1c0b67ab577c61dd965b868b2`,
+tagged `:latest` and `:20261014`:
+
+| Platform | Manifest | Built on |
+|---|---|---|
+| `linux/amd64` | `sha256:cbd3c1960ddc76d835d32afd22b2cb70be6b5ef071c2892aa0cf3cdd53ff6cd9` | the x86 VPS |
+| `linux/arm64/v8` | `sha256:b0905fa77029ad7520e6433c1462298435eb318350364b401752e11aad086e19` | `arm-cluster-master` |
+
+Pulled back from GHCR on both hosts: the same index digest resolved to
+`cbd3c1960ddc` on amd64 and `6948c9a2fe82` on arm64. That is a multi-arch image
+working, not a claim about one.
+
+The two single-arch images came from **different hosts, different commits and
+different mirror sets**, so equivalence was measured instead of assumed:
+
+| | arm64 | amd64 |
+|---|---|---|
+| Packages | 127 | 127 — **identical names and versions** |
+| node | v24.21.0 | v24.21.0 |
+| ttyd | 1.7.7-40e79c7 | 1.7.7-40e79c7 |
+| `dist/bundle/cli.js` | `e79626f2…` | `e79626f2…` (**byte-identical**) |
+| `/usr/local/bin/ttyd` | `b38acadd…` | `8a217c96…` — the per-architecture pin |
+
+Only the `ttyd` binary legitimately differs.
+
+### The Pod could not be reached
+
+`core.yaml` declared `containerPort: 7681`, defined a Service on 7681, set
+`PI_CAGE_AUTH_HEADER`, and carried a comment about the Service being reachable only
+through the labelled ingress source — but never set `PI_CAGE_BIND`. So `serve` used
+its default and listened on **`127.0.0.1` only**, and a Service DNATs to the Pod IP.
+
+Measured:
+
+| Probe | Result |
+|---|---|
+| `/proc/net/tcp` in the live Pod | `0100007F:1E01` = `127.0.0.1:7681` |
+| From inside the Pod | reachable — ttyd answered `407 Proxy Auth Required` |
+| `docker run -p 127.0.0.1:17681:7681 … serve`, then curl | `Connection reset by peer` |
+| From a labelled Pod in another namespace, after the fix | `nc` exit 0, `HTTP/1.1 407` |
+
+**Fix:** set `PI_CAGE_BIND=0.0.0.0` and `PI_CAGE_ALLOW_PUBLIC=1` in `core.yaml`. The
+boundary for that Deployment is not the bind address; it is the two layers that
+already existed and are now stated next to those variables — the `proxy-ingress`
+NetworkPolicy admitting only sources labelled `pi-cage-client: "true"`, and ttyd
+requiring the auth header.
+
+### Correction: an intermediate conclusion in this investigation was wrong
+
+While diagnosing the above, a labelled test Pod in the `pi-cage` namespace could
+not reach the Pod IP, and that was taken as confirmation that the bind address was
+the cause. **It proved nothing.** `default-deny` in that namespace selects all Pods
+with `policyTypes: [Ingress, Egress]`, so the test Pod's own **egress** was denied
+and it could never have connected regardless of what the target was bound to.
+
+Re-run from a labelled Pod in the `default` namespace — where no policy restricts
+egress — the connection succeeds and ttyd answers `407`. That is the version
+recorded above.
+
+The loopback finding stands on its own evidence, which involves no policy at all:
+`/proc/net/tcp` inside the container, and `docker run -p` failing with
+`Connection reset by peer`.
+
+**The general lesson, and it is the same one as the survey correction in
+[prior-art.md](prior-art.md): a probe that fails tells you nothing until you have
+established that it was capable of succeeding.** The first in-cluster test here had
+a blocked egress path and looked exactly like a blocked ingress path.
+
+### Coverage this exposed as missing
+
+Every check before this one inspected the container's **properties** — uid, caps,
+read-only rootfs, mounts, refusals — and none tried to **connect to it**. That is
+why a manifest that could never serve a request passed every gate. Reachability is
+now part of what gets checked.
+
+---
+
 ## Not yet verified
 
 | Claim | Status |
 |---|---|
-| **Any model call** | **Never made.** The TUI starts and reports "No models available"; no provider credentials are configured and no prompt has been run in this image. |
-| Multi-arch buildx (`./build.sh --multiarch`) | **Never run.** arm64 and amd64 both build and pass, but as two separate single-arch builds on two hosts — not one manifest-list build. |
+| **Any model call** | **Never made.** The TUI starts and reports "No models available"; no provider credentials are configured and no prompt has been run in this image. `run` and `json` are therefore documented from upstream's spec, not from a test. |
+| **`docker-compose.yml` works** | **It does not.** It publishes `127.0.0.1:7681:7681` while the container binds loopback — the same contradiction as the Kubernetes manifest, and the same fix does not apply cleanly. Options and their costs are in [roadmap.md](roadmap.md). |
+| **The GHCR package is public** | **It is private.** Anonymous pull does not work, so a cluster without an `imagePullSecret` cannot use the published image. |
+| `serve` through a real authenticating proxy, in a browser | **Never run.** ttyd's `407` proves the header is required; no proxy has ever injected it, and no WebSocket upgrade has crossed the tunnel. |
+| Multi-arch buildx (`./build.sh --multiarch`) | **Never run.** The published index was assembled with `docker manifest create` from two single-arch builds, not by a buildx manifest-list build. The result is equivalent; the code path is untested. |
 | Behaviour under a real workload | **Never run.** No agent has been given a task; only the startup path was exercised. |
 | Behaviour under attack | **Never attempted.** |
-| `serve` through a real authenticating proxy, in a browser | **Never run.** The ttyd/tmux/pi composition was verified directly, but no reverse proxy has injected `X-Auth-Request-Email`, and no WebSocket upgrade has crossed the tunnel. |
-| `run` / `json` modes | **Never run.** Only `serve` was exercised. |
 
 ---
 

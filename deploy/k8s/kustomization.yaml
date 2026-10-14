@@ -10,13 +10,13 @@ resources:
 # ---------------------------------------------------------------------------
 # SET THIS BEFORE YOU APPLY.
 #
-# core.yaml references ghcr.io/zmhhaha/pi-cage:latest, which is NOT PUBLISHED.
-# Applying as-is gives you a Deployment, a Service and three NetworkPolicies --
-# and a Pod in ImagePullBackOff. The boundary policies apply fine; the container
-# never starts.
+# core.yaml references ghcr.io/zmhhaha/pi-cage:latest, which IS PUBLISHED as a
+# multi-arch manifest list (amd64 + arm64/v8). It is a private GHCR package until
+# you switch visibility to public, so a cluster without an imagePullSecret still
+# lands in ImagePullBackOff.
 #
-# This block is the single place to point it somewhere real. The three cases
-# (publish to GHCR / your own registry / the image exists on one node only) are
+# This block is the single place to point it somewhere else. The three cases
+# (public GHCR / your own registry / the image exists on one node only) are
 # spelled out with commands in deploy/k8s/README.md.
 #
 # The image name is also what makes `:latest` behave: the Pod template in
