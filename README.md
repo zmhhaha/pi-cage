@@ -305,6 +305,7 @@ Preflight refuses to produce a verdict at all if the cluster's policy no longer 
 | [verify-network-boundary.sh](verify-network-boundary.sh) | Kubernetes boundary checks, probed from inside the real container. |
 | [docs/verification-log.md](docs/verification-log.md) | What has actually been checked, on what, and when — including what has **not**. |
 | [docs/roadmap.md](docs/roadmap.md) | What stands between "verified on one cluster" and "a stranger can use it". |
+| [sbom/](sbom/README.md) | SPDX 2.3 documents for both published images — and what they do **not** cover. |
 
 
 ---

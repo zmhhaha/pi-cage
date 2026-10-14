@@ -126,17 +126,47 @@ build — and a published image — remains item 1.
 
 ---
 
-## 6. SBOM and build provenance
+## 6. SBOM and build provenance — **partly done, 2026-10-14**
 
 **Why.** The project pins the base image by digest, Pi by exact version and `ttyd`
 by SHA-256, then ships no way for anyone to check the result. A published image
-without an SBOM asks for exactly the trust this project spends its time not
-asking for.
+without an SBOM asks for exactly the trust this project spends its time not asking
+for.
 
-**Acceptance:** an SBOM (`syft`) and provenance (`buildx --provenance=true`)
-attached to a tagged release, with the digest in the release notes.
+**Done: SBOMs exist, and they answer a question nothing else did.** Two SPDX 2.3
+documents in [`sbom/`](../sbom/README.md), one per published architecture,
+generated with syft from the local image archives — 438 packages each, same names,
+same versions, **zero present in only one architecture**. That is a stronger
+cross-architecture statement than the package-count comparison it replaces,
+because it is derived from the published artifacts rather than from a build log.
 
-**Blocked on:** 1 (there must be a release first).
+**And it found a gap worth stating.** The SBOM covers the Debian packages, the npm
+tree and the Node runtime. It does **not** cover `ttyd`: a statically linked C
+binary with libwebsockets inside, with no syft cataloguer. `ttyd` is one of the
+three pinned inputs to this image, so **the SBOM does not cover the whole supply
+chain** and `sbom/README.md` says so where a reader will hit it.
+
+**Also done: the repeatable form.** [`.github/workflows/release.yml`](../.github/workflows/release.yml)
+builds both architectures in **one manifest-list build** (the `--multiarch` path
+that has never run), generates an SBOM per architecture against the published
+digests, requests `--provenance=mode=max --sbom=true` attestations, and creates the
+release with both documents attached and the index digest in the notes.
+
+**Not done, and not claimed:**
+
+- **The workflow has never run.** No tag has been pushed since it was written. It
+  is a script that has been read, not a process that has executed.
+- **No tagged release exists**, so "attached to a release" is met only in the
+  weaker form of committed files. The workflow is what makes it true on the next
+  tag.
+- **The published images carry no OCI labels.** `Config.Labels` is `null`, so
+  `org.opencontainers.image.source` is absent and GHCR was linked by hand. The
+  Dockerfile now sets the standard label set and `build.sh` supplies the revision,
+  based image name and base digest; **the next build applies them natively.** They
+  were not back-filled onto the current images, because doing that means either a
+  relabelling trick that produces an image no Dockerfile describes, or a rebuild
+  that risks package drift between the two architectures — and drift would break
+  the equivalence proved above.
 
 ---
 

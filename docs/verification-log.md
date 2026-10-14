@@ -425,6 +425,51 @@ now part of what gets checked.
 | Multi-arch buildx (`./build.sh --multiarch`) | **Never run.** The published index was assembled with `docker manifest create` from two single-arch builds, not by a buildx manifest-list build. The result is equivalent; the code path is untested. |
 | Behaviour under a real workload | **Never run.** No agent has been given a task; only the startup path was exercised. |
 | Behaviour under attack | **Never attempted.** |
+| **The release workflow has run** | **Never.** `.github/workflows/release.yml` has been written and read, not executed — no tag has been pushed since it existed. |
+| **A tagged release exists** | **None.** The SBOMs are committed rather than attached to a release, which is the weaker form of the acceptance criterion. |
+| **The published images carry OCI labels** | **They do not.** `Config.Labels` is `null` on both. The Dockerfile now sets them so the next build has them; these two images do not, and were deliberately not back-filled. |
+
+---
+
+## 2026-10-14 — SBOMs, and what they do not cover
+
+Generated with syft for both published architectures, committed under
+[`sbom/`](../sbom/README.md).
+
+**They were generated from local image archives, not from the registry.** Pointing
+syft at `registry:ghcr.io/...` failed on both hosts with `connection reset by peer`
+against GitHub's CDN — the same mainland-China network boundary that blocked
+`github.com` during the amd64 build. A document that cannot be regenerated where it
+was made is not worth much, and `docker save` plus
+`syft docker-archive:` needs no network at all.
+
+**What they settled.** Comparing the two documents by `name@version`:
+
+| | arm64 | amd64 |
+|---|---|---|
+| Packages | 438 | 438 |
+| Unique `name@version` | 425 | 425 |
+| Present in only one | **0** | **0** |
+
+This is a stronger claim than the `dpkg-query` comparison it supersedes, because it
+comes from the published artifacts and includes the npm tree and the Node runtime,
+not just the OS packages.
+
+**What they exposed.** The SBOM does **not** cover `ttyd`. It is a statically
+linked C binary with libwebsockets inside, and syft has no cataloguer for it: it
+appears in the file list as `usr/local/bin/ttyd` with no version and no
+dependencies, and `libwebsockets` does not appear at all. `ttyd` is one of the
+three pinned inputs to this image, so the SBOM covers two of them and the
+authoritative record for the third remains the SHA-256 in the Dockerfile.
+
+That is the useful part. An SBOM that is assumed to cover everything is worse than
+one whose boundary is written down.
+
+**Added at the same time:** `PROVENANCE=1` support in `build.sh`
+(`--provenance=mode=max --sbom=true`) and
+[`.github/workflows/release.yml`](../.github/workflows/release.yml), which does the
+whole release in one manifest-list build. **The workflow has not run** — see the
+table above.
 
 ---
 

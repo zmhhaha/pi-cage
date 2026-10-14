@@ -146,9 +146,20 @@ if [ "$MULTIARCH" = 1 ]; then
   )
 
   target="${IMAGE_REF}:${TAG}"
+
+  # PROVENANCE=1 asks buildx for a signed provenance attestation and an SBOM
+  # attestation alongside the image. Off by default: both are pushed as
+  # referrers, which not every registry retains, and neither is useful when
+  # building into a local daemon instead of pushing.
+  attest_args=()
+  if [ "${PROVENANCE:-0}" = 1 ]; then
+    attest_args=(--provenance=mode=max --sbom=true)
+  fi
+
   run docker buildx build \
     --platform linux/amd64,linux/arm64 \
     "${build_args[@]}" \
+    "${attest_args[@]}" \
     --tag "$target" \
     --tag "${IMAGE_REF}:latest" \
     --push \
