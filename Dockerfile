@@ -54,9 +54,20 @@ RUN set -eux; \
 # tampering -- the digests below are the actual pin. They are transcribed from
 # https://github.com/tsl0922/ttyd/releases/download/1.7.7/SHA256SUMS
 # Update TTYD_VERSION and both digests together, never separately.
+#
+# TTYD_BASE_URL exists because github.com release downloads are unreliable or
+# outright unreachable on some networks (measured: a Tencent Cloud VPS in
+# mainland China times out on github.com entirely while codeload.github.com
+# works). Override it to point at a mirror, an internal artifact store, or a
+# local directory -- `file:///path` works, with the file at
+# ${TTYD_BASE_URL}/${TTYD_VERSION}/${asset}.
+#
+# The SHA-256 check runs regardless of where the bytes came from, so changing the
+# source cannot weaken the pin. The pin is the digest, not the URL.
 ARG TTYD_VERSION=1.7.7
 ARG TTYD_SHA256_ARM64=b38acadd89d1d396a0f5649aa52c539edbad07f4bc7348b27b4f4b7219dd4165
 ARG TTYD_SHA256_AMD64=8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
+ARG TTYD_BASE_URL=https://github.com/tsl0922/ttyd/releases/download
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in \
@@ -64,8 +75,12 @@ RUN set -eux; \
         amd64) asset="ttyd.x86_64";  want="${TTYD_SHA256_AMD64}" ;; \
         *) echo "pi-cage: no ttyd asset mapped for architecture ${arch}" >&2; exit 1 ;; \
     esac; \
-    url="https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/${asset}"; \
-    curl -fsSL --retry 3 --retry-delay 2 -o /usr/local/bin/ttyd "${url}"; \
+    url="${TTYD_BASE_URL}/${TTYD_VERSION}/${asset}"; \
+    curl -fsSL --retry 3 --retry-delay 2 -o /usr/local/bin/ttyd "${url}" \
+      || { echo "pi-cage: could not fetch ${url}" >&2; \
+           echo "  If github.com is unreachable here, override TTYD_BASE_URL with a" >&2; \
+           echo "  mirror or a local path; the SHA-256 check below still applies." >&2; \
+           exit 1; }; \
     echo "${want}  /usr/local/bin/ttyd" | sha256sum -c -; \
     chmod 0755 /usr/local/bin/ttyd; \
     ttyd --version

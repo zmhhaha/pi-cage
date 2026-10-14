@@ -7,6 +7,10 @@
 #   ./build.sh --multiarch     linux/amd64 + linux/arm64 via buildx, pushes
 #   ./build.sh --push          build and push the single-arch image
 #   ./build.sh --dry-run       print the plan, touch nothing
+#   ./build.sh --ttyd-base-url <url>
+#                              fetch the ttyd asset from somewhere other than
+#                              github.com (mirror, artifact store, file:///...).
+#                              The SHA-256 pin in the Dockerfile still applies.
 #
 # Overrides go in build.local.env (gitignored), never in this file.
 
@@ -25,6 +29,7 @@ while [ "$#" -gt 0 ]; do
     --dry-run)  DRY_RUN=1 ;;
     --multiarch) MULTIARCH=1; PUSH=1 ;;
     --push)     PUSH=1 ;;
+    --ttyd-base-url) TTYD_BASE_URL="${2:?--ttyd-base-url needs a value}"; shift ;;
     -h|--help)  usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage; exit 2 ;;
   esac
@@ -40,6 +45,10 @@ IMAGE="${IMAGE:-pi-cage}"
 REGISTRY="${REGISTRY:-}"
 TAG="${TAG:-$(date -u +%Y%m%dT%H%M%SZ)}"
 NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmjs.org}"
+# Where to fetch the ttyd release asset from. Override when github.com is
+# unreachable where you build; the SHA-256 check in the Dockerfile still applies,
+# so the pin does not depend on the URL.
+TTYD_BASE_URL="${TTYD_BASE_URL:-https://github.com/tsl0922/ttyd/releases/download}"
 
 host_arch() { uname -m | sed 's/^x86_64$/amd64/; s/^aarch64$/arm64/'; }
 PLATFORM="${PLATFORM:-linux/$(host_arch)}"
@@ -47,7 +56,12 @@ PLATFORM="${PLATFORM:-linux/$(host_arch)}"
 die() { printf 'build: error: %s\n' "$*" >&2; exit 1; }
 run() { printf '+ %s\n' "$*" >&2; [ "$DRY_RUN" = 1 ] || "$@"; }
 
-command -v docker >/dev/null 2>&1 || die 'docker is required'
+# Only a real build needs a daemon. --dry-run is documented as "print the plan,
+# touch nothing", and needing Docker installed to print a plan is exactly the
+# situation where you would want to dry-run.
+if [ "$DRY_RUN" = 0 ]; then
+  command -v docker >/dev/null 2>&1 || die 'docker is required'
+fi
 
 # --- input validation -------------------------------------------------------
 # Pi must be pinned to an exact version. `latest` would let a rebuild change the
@@ -70,6 +84,7 @@ build_args=(
   --build-arg "NODE_IMAGE=${NODE_IMAGE_RESOLVED:-$NODE_IMAGE}"
   --build-arg "PI_PACKAGE=${PI_PACKAGE}"
   --build-arg "NPM_REGISTRY=${NPM_REGISTRY}"
+  --build-arg "TTYD_BASE_URL=${TTYD_BASE_URL}"
 )
 
 if [ "$MULTIARCH" = 1 ]; then
@@ -93,6 +108,7 @@ if [ "$MULTIARCH" = 1 ]; then
     --build-arg "NODE_IMAGE=${NODE_IMAGE_RESOLVED}"
     --build-arg "PI_PACKAGE=${PI_PACKAGE}"
     --build-arg "NPM_REGISTRY=${NPM_REGISTRY}"
+    --build-arg "TTYD_BASE_URL=${TTYD_BASE_URL}"
   )
 
   target="${IMAGE_REF}:${TAG}"
@@ -134,15 +150,20 @@ if [ "$DRY_RUN" = 0 ]; then
     *) die "could not resolve a digest for ${NODE_IMAGE}" ;;
   esac
   printf 'base image pinned to digest: %s\n' "$NODE_IMAGE_RESOLVED" >&2
-
-  build_args=(
-    --build-arg "NODE_IMAGE=${NODE_IMAGE_RESOLVED}"
-    --build-arg "PI_PACKAGE=${PI_PACKAGE}"
-    --build-arg "NPM_REGISTRY=${NPM_REGISTRY}"
-  )
 else
   NODE_IMAGE_RESOLVED="$NODE_IMAGE"
 fi
+
+# Built outside the DRY_RUN branch on purpose: `"${build_args[@]}"` with the array
+# unset aborts under `set -u`, so --dry-run used to die with "unbound variable"
+# before printing anything. The flag is documented as "print the plan, touch
+# nothing", and it had never actually been run.
+build_args=(
+  --build-arg "NODE_IMAGE=${NODE_IMAGE_RESOLVED}"
+  --build-arg "PI_PACKAGE=${PI_PACKAGE}"
+  --build-arg "NPM_REGISTRY=${NPM_REGISTRY}"
+  --build-arg "TTYD_BASE_URL=${TTYD_BASE_URL}"
+)
 
 target="${IMAGE_REF}:${TAG}"
 run docker build \

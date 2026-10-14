@@ -190,6 +190,25 @@ The digests live as `ARG`s next to `TTYD_VERSION` in the Dockerfile. Fetching th
 
 Only `linux/amd64` and `linux/arm64` are mapped. Any other architecture fails the build with an explicit message rather than silently producing an image without `serve` mode.
 
+#### If `github.com` is unreachable where you build
+
+Measured on a Tencent Cloud VPS in mainland China: `github.com` times out entirely — `git clone` and release-asset downloads both — while `codeload.github.com` and the registry mirror work fine. That kills this build step and nothing else.
+
+Point the download somewhere else:
+
+```bash
+# a mirror or internal artifact store, laid out as <base>/<version>/<asset>
+./build.sh --ttyd-base-url https://mirror.example.com/ttyd
+
+# or a local directory, which is what the amd64 build in
+# docs/verification-log.md used
+docker build --build-arg TTYD_BASE_URL=file:///srv/ttyd-assets .
+```
+
+**The SHA-256 check runs whatever the source.** Changing the URL cannot weaken the pin, because the pin is the digest and not the location — that was tested by extracting the binary from the `tsl0922/ttyd` image, fetching it from a different transport entirely, and confirming the hash matched.
+
+That image is a viable alternative source in its own right: `tsl0922/ttyd:1.7.7` is multi-arch, and its `/usr/bin/ttyd` is byte-identical to the release asset. See [docs/roadmap.md](docs/roadmap.md).
+
 **This is the pattern for any future finding:** the build stops, the reason is written down here, and the fix is pinned rather than floated.
 
 ---

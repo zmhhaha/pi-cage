@@ -155,6 +155,21 @@ Separate track, and free.
 
 ---
 
+## Under consideration
+
+**Source `ttyd` from its Docker image instead of the GitHub release.** The image
+`tsl0922/ttyd:1.7.7` is multi-arch, and its `/usr/bin/ttyd` is **byte-identical**
+to the release asset — confirmed by extracting it and matching the SHA-256 already
+pinned in the Dockerfile. That would remove the build's only dependency on
+`github.com`, which is unreachable on some networks while registries (needed
+anyway, for the base image) keep working.
+
+Not done because it changes the transport for something already pinned and
+verified, and the current failure has a workaround (`--ttyd-base-url`) that keeps
+the digest check in force. Revisit if a second person hits a blocked `github.com`.
+
+---
+
 ## Explicitly not planned
 
 - **A web UI.** Two projects do this well and one is 7,315★.
