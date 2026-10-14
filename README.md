@@ -4,13 +4,13 @@
 
 Pi has no built-in sandbox — by design, its `bash` tool runs commands with the permissions of whatever account started it. `pi-cage` takes the position that **the container is the boundary**: no Docker socket, no host paths, no `hostexec`, no cluster credentials. The agent gets a workspace and a network policy, and nothing else.
 
-> ### ⚠️ Status: pre-alpha, container verified on ARM64
+> ### ⚠️ Status: pre-alpha, container and network boundary verified
 >
-> **`linux/arm64` builds end to end (2026-10-13), and [`./verify-hardening.sh`](verify-hardening.sh) passes every check against the built image.** No image is published anywhere yet.
+> **arm64 and amd64 both build end to end, and [`./verify-hardening.sh`](verify-hardening.sh) passes every check on each — 22/22, exit code 0. [`verify-network-boundary.sh`](verify-network-boundary.sh) passes on a real 6-node ARM64 Calico cluster, also exit code 0.** No image is published anywhere yet.
 >
-> **Verified so far:** the ARM64 build completes; `ttyd` is downloaded and SHA-256 verified; Pi installs from npm; the build-time gates in [`docker/assert-image.sh`](docker/assert-image.sh) pass; and the container-level hardening claims hold on a real container — read-only root filesystem, all capabilities dropped, no-new-privileges, **no Docker socket, no host paths**, and all four fail-closed refusals.
+> **Verified so far:** both architectures build; `ttyd` is downloaded and SHA-256 verified, and the pin was confirmed against a second transport; Pi installs at an exact pinned version; the build-time gates in [`docker/assert-image.sh`](docker/assert-image.sh) pass; the container hardening holds on a real container — read-only root filesystem, all capabilities dropped, no-new-privileges, **no Docker socket, no host paths**; every internal target and the metadata address are refused from inside the container; an unlabelled Pod cannot reach the web terminal; and all four fail-closed refusals refuse.
 >
-> **Not yet verified:** the Kubernetes network boundary ([`verify-network-boundary.sh`](verify-network-boundary.sh)) has not been run against a cluster, and this container has never run a real workload or been attacked. [THREAT-MODEL.md](THREAT-MODEL.md) records what is not defended at all. See [docs/verification-log.md](docs/verification-log.md) for what was checked, when, and on what.
+> **Not yet verified:** no model call has ever been made from this image, and `serve` has not been exercised through a real authenticating proxy in a browser. [THREAT-MODEL.md](THREAT-MODEL.md) records what is not defended at all; [docs/verification-log.md](docs/verification-log.md) records what was checked, when, and on what.
 
 
 ---

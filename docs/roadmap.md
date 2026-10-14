@@ -104,24 +104,23 @@ without a proxy is refused by design.
 
 ---
 
-## 5. `linux/amd64`
+## 5. `linux/amd64` — **done, 2026-10-14**
 
-**Why.** Never built. An x86 user cannot run this at all, which halves the
-audience before anything else is considered. `core.yaml` no longer pins ARM64, so
-the manifests are ready.
+**Why.** Never built, so an x86 user could not run this at all. `core.yaml` no
+longer pins ARM64, so the manifests were already waiting.
 
-**Do**
+**Done:** built on a Tencent Cloud VPS (x86) and verified —
+`./verify-hardening.sh` passes **22/22, exit code 0**, the same checks that pass on
+ARM64. Details in [verification-log.md](verification-log.md).
 
-```bash
-./build.sh --multiarch          # buildx, amd64 + arm64, pushes
-```
+Two blocked build inputs surfaced on that host and are now overridable:
+`github.com` is unreachable there entirely, and `deb.debian.org` stalled for 19
+minutes. `--ttyd-base-url` and `--apt-mirror` handle both, and neither weakens a
+pin.
 
-**Acceptance:** both architectures pass `./verify-hardening.sh`; the `arm64` run is
-already recorded, the `amd64` one added alongside it.
-
-**Blocked on:** a build environment for amd64 — either an x86 machine with Docker
-or `binfmt_misc`/qemu registered on the ARM64 builder, which the build host does
-not currently have. **Check before promising the multiarch path works.**
+**Still open: the `--multiarch` buildx path itself.** arm64 and amd64 both build
+and pass, but as two separate single-arch builds on two hosts. One manifest-list
+build — and a published image — remains item 1.
 
 ---
 

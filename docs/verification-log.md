@@ -229,13 +229,94 @@ boundary", which is the wrong conclusion.
 
 ---
 
+## 2026-10-14 — `linux/amd64`, Tencent Cloud VPS (2 vCPU / 1.9 GiB, mainland China)
+
+Roadmap item 5. The amd64 image had never been built, which excluded every x86
+user before anything else was considered.
+
+This run took longer than it should have, and the reason is worth recording: the
+build host's network blocks two inputs that had never been exercised, and both
+failures looked like something other than what they were.
+
+### Two blocked inputs, and what they cost
+
+**1. `github.com` is unreachable from this host.** `git clone` times out after
+134 s and a release-asset download returns zero bytes after 60 s — while
+`codeload.github.com` and the registry mirror answer normally. That kills the
+`ttyd` fetch and nothing else.
+
+Rather than work around it by hand, the download was made relocatable:
+`TTYD_BASE_URL` / `--ttyd-base-url`. **The SHA-256 check runs whatever the
+source**, so moving the download cannot weaken the pin — the pin is the digest,
+not the URL. That was tested, not asserted: the amd64 binary was extracted from
+the `tsl0922/ttyd` image, a different transport entirely, and its hash matched the
+value already pinned in the Dockerfile —
+
+```
+8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
+1362040 bytes, ELF, byte-identical to the release asset
+```
+
+**2. `deb.debian.org` stalls.** The in-container `apt-get` ran for **19 minutes**
+with one open connection and a **load average of 0.18** — no CPU use, which is the
+signature of a network stall rather than work. `mirrors.cloud.tencent.com`
+answered both the `debian` and `debian-security` suites instantly. Adding
+`APT_MIRROR` / `--apt-mirror` cut the build to about four minutes.
+
+Both are the same shape as the `NPM_REGISTRY` and `PIP_INDEX_URL` overrides this
+ecosystem already carries. Three build inputs can be blocked by a network: the
+base image registry, the `ttyd` asset, and the apt mirror. All three are now
+overridable, and none of them weakens a pin.
+
+**A third bug surfaced while testing the first two.** `--dry-run` had never
+worked: `build_args` was assigned only inside the `DRY_RUN=0` branch, so
+`"${build_args[@]}"` aborted under `set -u` with "unbound variable" — and it also
+required Docker to be installed, which defeats the point of a flag documented as
+"print the plan, touch nothing". Both fixed, with a regression check.
+
+### Build
+
+| Check | Result |
+|---|---|
+| Base image architecture asserted | ✅ `amd64` |
+| Base image pinned to digest | ✅ `node@sha256:d6aa754f16b3197301…` (same manifest-list digest as the arm64 build) |
+| `ttyd` SHA-256 verified from a non-GitHub source | ✅ |
+| Pi installed at the exact pinned version | ✅ `@earendil-works/pi-coding-agent@0.99.2` |
+| Build-time gates in `assert-image.sh` | ✅ |
+| Image | `pi-cage:20261014T112957Z`, `linux/amd64`, 1.11 GB, `user=10001:10001` |
+
+### `./verify-hardening.sh` on amd64 — 22/22, exit code 0
+
+| Section | Result |
+|---|---|
+| A. Image properties | ✅ 3/3 |
+| B. Reference run configuration, static | ✅ 9/9 |
+| C. Runtime measurement | ✅ 6/6 — read-only rootfs, all capabilities dropped, no-new-privileges, no Docker socket, no host paths, no host Docker data directory |
+| D. Refusals and absences | ✅ 4/4 |
+
+The same checks that pass on ARM64 pass on amd64, from an image built on a
+different host with different mirrors. Multi-arch is real, not claimed.
+
+**Not covered by this run:** the `--multiarch` buildx path itself is still
+unexercised — this was two single-arch builds on two machines, not one
+manifest-list build. See the table below.
+
+### Host hygiene
+
+The VPS runs `frps` and listens on `:7000`; it is an entry point for other
+infrastructure. It was checked before and after every step and was never touched.
+Docker was installed for this build, and one pinned `ttyd` asset was staged over
+the Docker bridge on `172.17.0.1` — not on a public interface — and the helper was
+stopped afterwards.
+
+---
+
 ## Not yet verified
 
 | Claim | Status |
 |---|---|
 | **Any model call** | **Never made.** The TUI starts and reports "No models available"; no provider credentials are configured and no prompt has been run in this image. |
-| `linux/amd64` | **Never built.** Only ARM64 has been built. |
-| Multi-arch buildx path (`./build.sh --multiarch`) | **Never run.** |
+| Multi-arch buildx (`./build.sh --multiarch`) | **Never run.** arm64 and amd64 both build and pass, but as two separate single-arch builds on two hosts — not one manifest-list build. |
 | Behaviour under a real workload | **Never run.** No agent has been given a task; only the startup path was exercised. |
 | Behaviour under attack | **Never attempted.** |
 | `serve` through a real authenticating proxy, in a browser | **Never run.** The ttyd/tmux/pi composition was verified directly, but no reverse proxy has injected `X-Auth-Request-Email`, and no WebSocket upgrade has crossed the tunnel. |
