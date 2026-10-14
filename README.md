@@ -209,6 +209,19 @@ docker build --build-arg TTYD_BASE_URL=file:///srv/ttyd-assets .
 
 That image is a viable alternative source in its own right: `tsl0922/ttyd:1.7.7` is multi-arch, and its `/usr/bin/ttyd` is byte-identical to the release asset. See [docs/roadmap.md](docs/roadmap.md).
 
+#### If `deb.debian.org` is slow where you build
+
+The same VPS that cannot reach `github.com` also **stalled for 19 minutes** on the
+in-container `apt-get` step — one open connection, load average 0.18 — while
+`mirrors.cloud.tencent.com` answered both suites instantly.
+
+```bash
+./build.sh --apt-mirror http://mirrors.cloud.tencent.com
+```
+
+The mirror must serve the `debian` **and** `debian-security` suites. Empty keeps
+the base image's own sources, which is the default.
+
 **This is the pattern for any future finding:** the build stops, the reason is written down here, and the fix is pinned rather than floated.
 
 ---

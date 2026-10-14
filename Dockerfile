@@ -13,7 +13,25 @@ ARG PI_PACKAGE=@earendil-works/pi-coding-agent@0.99.2
 ARG NPM_REGISTRY=https://registry.npmjs.org
 
 # --- runtime tooling --------------------------------------------------------
+# APT_MIRROR exists for the same reason this ecosystem carries NPM_REGISTRY and
+# PIP_INDEX_URL overrides: deb.debian.org is slow or unreachable from some
+# networks. Measured on a Tencent Cloud VPS in mainland China -- this exact step
+# stalled for 19 minutes with one open connection and a load average of 0.18,
+# while mirrors.cloud.tencent.com answered both suites instantly.
+#
+#   docker build --build-arg APT_MIRROR=http://mirrors.cloud.tencent.com ...
+#
+# Empty (the default) leaves the base image's own sources untouched. The mirror
+# must serve both the `debian` and `debian-security` suites.
+ARG APT_MIRROR=
 RUN set -eux; \
+    if [ -n "${APT_MIRROR}" ]; then \
+      for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
+        [ -f "$f" ] && sed -i "s|http://deb.debian.org|${APT_MIRROR}|g" "$f"; \
+      done; \
+      echo 'effective apt sources:'; \
+      grep -rhE '^(URIs|deb) ' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null | head -4 || true; \
+    fi; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         bash \

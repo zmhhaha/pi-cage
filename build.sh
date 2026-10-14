@@ -11,6 +11,9 @@
 #                              fetch the ttyd asset from somewhere other than
 #                              github.com (mirror, artifact store, file:///...).
 #                              The SHA-256 pin in the Dockerfile still applies.
+#   ./build.sh --apt-mirror <url>
+#                              use a Debian mirror other than deb.debian.org,
+#                              which stalls on some networks.
 #
 # Overrides go in build.local.env (gitignored), never in this file.
 
@@ -18,7 +21,7 @@ set -Eeuo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 
 usage() {
-  sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
 }
 
 DRY_RUN=0
@@ -30,6 +33,7 @@ while [ "$#" -gt 0 ]; do
     --multiarch) MULTIARCH=1; PUSH=1 ;;
     --push)     PUSH=1 ;;
     --ttyd-base-url) TTYD_BASE_URL="${2:?--ttyd-base-url needs a value}"; shift ;;
+    --apt-mirror)    APT_MIRROR="${2:?--apt-mirror needs a value}"; shift ;;
     -h|--help)  usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage; exit 2 ;;
   esac
@@ -49,6 +53,9 @@ NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmjs.org}"
 # unreachable where you build; the SHA-256 check in the Dockerfile still applies,
 # so the pin does not depend on the URL.
 TTYD_BASE_URL="${TTYD_BASE_URL:-https://github.com/tsl0922/ttyd/releases/download}"
+# Debian mirror for the in-container apt step. Empty keeps the base image's own
+# sources. Mirrors must serve both `debian` and `debian-security`.
+APT_MIRROR="${APT_MIRROR:-}"
 
 host_arch() { uname -m | sed 's/^x86_64$/amd64/; s/^aarch64$/arm64/'; }
 PLATFORM="${PLATFORM:-linux/$(host_arch)}"
@@ -85,6 +92,7 @@ build_args=(
   --build-arg "PI_PACKAGE=${PI_PACKAGE}"
   --build-arg "NPM_REGISTRY=${NPM_REGISTRY}"
   --build-arg "TTYD_BASE_URL=${TTYD_BASE_URL}"
+  --build-arg "APT_MIRROR=${APT_MIRROR}"
 )
 
 if [ "$MULTIARCH" = 1 ]; then
@@ -109,6 +117,7 @@ if [ "$MULTIARCH" = 1 ]; then
     --build-arg "PI_PACKAGE=${PI_PACKAGE}"
     --build-arg "NPM_REGISTRY=${NPM_REGISTRY}"
     --build-arg "TTYD_BASE_URL=${TTYD_BASE_URL}"
+  --build-arg "APT_MIRROR=${APT_MIRROR}"
   )
 
   target="${IMAGE_REF}:${TAG}"
@@ -163,6 +172,7 @@ build_args=(
   --build-arg "PI_PACKAGE=${PI_PACKAGE}"
   --build-arg "NPM_REGISTRY=${NPM_REGISTRY}"
   --build-arg "TTYD_BASE_URL=${TTYD_BASE_URL}"
+  --build-arg "APT_MIRROR=${APT_MIRROR}"
 )
 
 target="${IMAGE_REF}:${TAG}"
