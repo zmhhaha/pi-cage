@@ -192,6 +192,10 @@ docker inspect <container> --format '{{range .Mounts}}{{.Source}} {{end}}' # no 
 
 `serve` trusts a header injected by whatever sits in front of it (`X-Auth-Request-Email` by default). Put a real proxy there. The Kubernetes manifests pair with any ingress that sets that header; with Compose, put Caddy, Traefik, `oauth2-proxy` or Tailscale in front.
 
+**The header is a bearer token, not an identity.** `ttyd` checks that it is present and non-empty and nothing else — `X-Auth-Request-Email: x` is accepted. So the header is worth exactly as much as your control over who can reach the port and who can set it, and a NetworkPolicy or a private network is doing the real work. This is measured, not assumed; the requests and their status codes are in [docs/auth.md](docs/auth.md).
+
+Copy-pasteable configurations for `oauth2-proxy` with OIDC (sidecar and separate-pod), and for Caddy or nginx without an IdP, are in **[docs/auth.md](docs/auth.md)** — including the three settings that decide whether it works at all, two of which fail silently after a successful login.
+
 **Never port-forward this container's port directly to the internet.** The agent executes shell commands with the container's privileges and reads any credentials in it. A terminal on the open internet is a shell on the open internet.
 
 ---
@@ -305,6 +309,7 @@ Preflight refuses to produce a verdict at all if the cluster's policy no longer 
 | [verify-network-boundary.sh](verify-network-boundary.sh) | Kubernetes boundary checks, probed from inside the real container. |
 | [docs/verification-log.md](docs/verification-log.md) | What has actually been checked, on what, and when — including what has **not**. |
 | [docs/roadmap.md](docs/roadmap.md) | What stands between "verified on one cluster" and "a stranger can use it". |
+| [docs/auth.md](docs/auth.md) | `oauth2-proxy`, Caddy and nginx recipes — and the fact that the auth header is a bearer token, not an identity. |
 | [sbom/](sbom/README.md) | SPDX 2.3 documents for both published images — and what they do **not** cover. |
 
 

@@ -84,25 +84,41 @@ image, so this cannot be done without one.
 
 ---
 
-## 4. Two authentication recipes
+## 4. Authentication recipes — **done, 2026-10-14**
 
 **Why.** The design goal was "OIDC **and** reverse proxy, both spelled out". The
-README currently says "put an authenticating proxy in front" and stops. The
-closest peers either ship auth (`agegr/pi-web`'s `PI_WEB_PASSWORD`) or defer it;
-nobody writes the recipe down.
+README used to say "put an authenticating proxy in front" and stop. The closest
+peers either ship auth (`agegr/pi-web`'s `PI_WEB_PASSWORD`) or defer it.
 
-**Do** — `docs/auth.md` with two copy-pasteable configurations:
+**Done:** [`docs/auth.md`](auth.md) — `oauth2-proxy` with OIDC as a sidecar (the
+recommended shape, which keeps the loopback bind) and as a separate pod, plus Caddy
+and nginx for people with no IdP.
 
-1. **`oauth2-proxy` in front of `serve`**, injecting `X-Auth-Request-Email`, which
-   `serve` already requires — plus the Casdoor/OIDC client settings.
-2. **A plain reverse proxy** (Caddy or nginx) with any auth scheme, for people who
-   do not run an IdP.
+Written from a **working production `oauth2-proxy` deployment on the same cluster
+this project is verified against**, not from the upstream README, and that is where
+the useful parts came from:
 
-Both must state plainly that `serve` trusts the header and that binding publicly
-without a proxy is refused by design.
+- **`set_xauthrequest = true`** — without it `oauth2-proxy` never emits
+  `X-Auth-Request-Email`, so every request gets `407` *after* a successful login.
+  Silent, and the most likely reason a correct OIDC setup still fails.
+- **`proxy_websockets = true`** — ttyd is a WebSocket; without it the page loads and
+  the terminal never connects.
+- Two misconfigurations that stop `oauth2-proxy` from starting, both hit while
+  testing: `cookie_secret` must be exactly 16/24/32 bytes, and an email allow-list
+  is mandatory.
+- Two facts read off the live policies that the sidecar shape depends on:
+  `public-egress` selects `role: cage` (so the sidecar needs that label or it cannot
+  reach the IdP at all), and `proxy-ingress` admits **only port 7681**, so a sidecar
+  on 4180 needs a policy change to be reachable.
 
-**Acceptance:** someone can copy a config, change two values, and be authenticated.
-**Not blocked on anything.** This is the only item on the list that is pure writing.
+**And the thing worth stating loudest**, measured against a running `serve`:
+`ttyd` checks that the auth header is present and non-empty and **nothing else**.
+`X-Auth-Request-Email: x` gets `200`; `$(id)` gets `200`. The header is a bearer
+token, not an identity, and all the actual security is in who can reach the port.
+
+**Not done:** the sidecar manifest has not been applied, and no login has been
+completed in a browser — the OIDC round trip and the WebSocket upgrade through a
+real proxy are still unverified. Recorded in the table at the end of `auth.md`.
 
 ---
 

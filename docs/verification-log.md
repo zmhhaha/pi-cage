@@ -415,13 +415,60 @@ now part of what gets checked.
 
 ---
 
+## 2026-10-14 — What the auth header actually enforces
+
+Written up as [auth.md](auth.md). One measurement is worth stating on its own,
+because it changes how the whole deployment should be read:
+
+| Request to a running `serve`, `PI_CAGE_AUTH_HEADER=X-Auth-Request-Email` | Result |
+|---|---|
+| no header | `407` |
+| `someone@example.com` | `200` |
+| `x` | `200` |
+| empty value | `407` |
+| `$(id)` | `200` |
+
+**`ttyd` checks presence and non-emptiness. It does not check the value and does
+not verify any signature.** The header is a bearer token. Everything that actually
+protects a deployment lives outside the container: the network policy that decides
+who can reach the port, and the single proxy that is supposed to set the header.
+
+The failure mode this rules out is the comfortable one — that a valid-looking
+`X-Auth-Request-Email` means the request came from an authenticated user. It does
+not mean that. It means whoever sent it could open a TCP connection.
+
+### Also established, from a working production configuration
+
+- `set_xauthrequest = true` is required for `oauth2-proxy` to emit the header at
+  all; a correct OIDC login still ends in `407` without it.
+- `proxy_websockets = true` is required or the terminal never connects.
+- `cookie_secret` must be exactly 16, 24 or 32 bytes, and an email allow-list is
+  mandatory. Both were reproduced as startup failures rather than taken on faith.
+- Read off the live policies: `public-egress` selects `role: cage` only, so an
+  OIDC sidecar needs that label or it cannot reach the issuer; and `proxy-ingress`
+  admits **only port 7681**, so a sidecar listening on 4180 needs a policy change.
+
+One of those was observed rather than inferred: a sidecar without `role: cage`
+reached `Performing OIDC Discovery...` and never progressed, because
+`default-deny` denies egress to every pod in the namespace and only `role: cage`
+gets a public-egress rule.
+
+### Not established
+
+The sidecar manifest in `auth.md` has never been applied, and no login has been
+completed in a browser. The OIDC round trip and the WebSocket upgrade through a
+real proxy remain unverified, and `auth.md` says so in its own table.
+
+---
+
 ## Not yet verified
 
 | Claim | Status |
 |---|---|
 | **Any model call** | **Never made.** The TUI starts and reports "No models available"; no provider credentials are configured and no prompt has been run in this image. `run` and `json` are therefore documented from upstream's spec, not from a test. |
 | **`docker-compose.yml` works** | **It does not.** It publishes `127.0.0.1:7681:7681` while the container binds loopback — the same contradiction as the Kubernetes manifest, and the same fix does not apply cleanly. Options and their costs are in [roadmap.md](roadmap.md). |
-| `serve` through a real authenticating proxy, in a browser | **Never run.** ttyd's `407` proves the header is required; no proxy has ever injected it, and no WebSocket upgrade has crossed the tunnel. |
+| `serve` through a real authenticating proxy, in a browser | **Never run.** The header mechanics are tested (see the section below), but no proxy has ever injected the header and no WebSocket upgrade has crossed a tunnel. |
+| The auth recipe in [auth.md](auth.md) | **Partly.** The header behaviour is measured and two `oauth2-proxy` misconfigurations were reproduced; the sidecar manifest has not been applied. |
 | Multi-arch buildx (`./build.sh --multiarch`) | **Never run.** The published index was assembled with `docker manifest create` from two single-arch builds, not by a buildx manifest-list build. The result is equivalent; the code path is untested. |
 | Behaviour under a real workload | **Never run.** No agent has been given a task; only the startup path was exercised. |
 | Behaviour under attack | **Never attempted.** |
