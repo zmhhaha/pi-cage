@@ -344,6 +344,25 @@ different mirror sets**, so equivalence was measured instead of assumed:
 
 Only the `ttyd` binary legitimately differs.
 
+**Public, verified by the only test that distinguishes it.** A private package and
+a public one look identical to a client that holds credentials, so the check was
+made from a host with none:
+
+| Probe | Result |
+|---|---|
+| Anonymous token (`/token?scope=repository:zmhhaha/pi-cage:pull`) | issued |
+| Anonymous `tags/list` | `200` — `arm64`, `amd64`, `latest`, `20261014` |
+| Anonymous `manifests/latest` | `200` |
+| `docker logout ghcr.io`, then `docker pull ghcr.io/zmhhaha/pi-cage:latest` | succeeded, resolved index `sha256:897709bd…` |
+
+So a Kubernetes node needs no `imagePullSecret`. The package is also linked to the
+repository, so its page shows the project instead of an orphan image.
+
+**Not verified here:** the linkage itself. GitHub's package API returns `401
+Requires authentication` even for a public package, so it was confirmed by
+clicking rather than by a probe — the one claim in this section that rests on
+observation rather than measurement.
+
 ### The Pod could not be reached
 
 `core.yaml` declared `containerPort: 7681`, defined a Service on 7681, set
@@ -402,7 +421,6 @@ now part of what gets checked.
 |---|---|
 | **Any model call** | **Never made.** The TUI starts and reports "No models available"; no provider credentials are configured and no prompt has been run in this image. `run` and `json` are therefore documented from upstream's spec, not from a test. |
 | **`docker-compose.yml` works** | **It does not.** It publishes `127.0.0.1:7681:7681` while the container binds loopback — the same contradiction as the Kubernetes manifest, and the same fix does not apply cleanly. Options and their costs are in [roadmap.md](roadmap.md). |
-| **The GHCR package is public** | **It is private.** Anonymous pull does not work, so a cluster without an `imagePullSecret` cannot use the published image. |
 | `serve` through a real authenticating proxy, in a browser | **Never run.** ttyd's `407` proves the header is required; no proxy has ever injected it, and no WebSocket upgrade has crossed the tunnel. |
 | Multi-arch buildx (`./build.sh --multiarch`) | **Never run.** The published index was assembled with `docker manifest create` from two single-arch builds, not by a buildx manifest-list build. The result is equivalent; the code path is untested. |
 | Behaviour under a real workload | **Never run.** No agent has been given a task; only the startup path was exercised. |

@@ -6,7 +6,7 @@ Pi has no built-in sandbox — by design, its `bash` tool runs commands with the
 
 > ### ⚠️ Status: pre-alpha, published and verified on both architectures
 >
-> **`ghcr.io/zmhhaha/pi-cage:latest` is a multi-arch manifest list** — index `sha256:897709bd…`, resolving to `amd64` `sha256:cbd3c196…` and `arm64/v8` `sha256:b0905fa7…`. Both were pulled back from GHCR and confirmed to resolve per architecture. [`./verify-hardening.sh`](verify-hardening.sh) passes **22/22, exit code 0** on each, and [`verify-network-boundary.sh`](verify-network-boundary.sh) passes on a real 6-node ARM64 Calico cluster. **The GHCR package is private until you change its visibility** — see the quick start.
+> **`ghcr.io/zmhhaha/pi-cage:latest` is a multi-arch manifest list** — index `sha256:897709bd…`, resolving to `amd64` `sha256:cbd3c196…` and `arm64/v8` `sha256:b0905fa7…`. Both were pulled back from GHCR and confirmed to resolve per architecture, and the package is **public**: a host with no stored credentials pulled it anonymously. [`./verify-hardening.sh`](verify-hardening.sh) passes **22/22, exit code 0** on each, and [`verify-network-boundary.sh`](verify-network-boundary.sh) passes on a real 6-node ARM64 Calico cluster.
 >
 > **Verified so far:** both architectures build; `ttyd` is downloaded and SHA-256 verified, and the pin was confirmed against a second transport; Pi installs at an exact pinned version; the build-time gates in [`docker/assert-image.sh`](docker/assert-image.sh) pass; the container hardening holds on a real container — read-only root filesystem, all capabilities dropped, no-new-privileges, **no Docker socket, no host paths**; every internal target and the metadata address are refused from inside the container; an unlabelled Pod cannot reach the web terminal while a labelled one can, and gets `407` without the auth header; and all four fail-closed refusals refuse.
 >
@@ -64,11 +64,14 @@ Kubernetes:
 kubectl apply -k deploy/k8s
 ```
 
-> ⚠️ **The GHCR package is private until you change it.** GitHub → the package →
-> *Package settings* → *Change visibility* → *Public*. Until then your nodes cannot
-> pull it without an `imagePullSecret` and the Pod sits in `ImagePullBackOff`.
+> The package is **public**, and that was verified the only way that counts:
+> a host with **no stored credentials** (`docker logout ghcr.io`) pulled
+> `:latest` anonymously and resolved the same index digest. Your nodes need no
+> `imagePullSecret`.
+>
 > [`deploy/k8s/kustomization.yaml`](deploy/k8s/kustomization.yaml) is the single
-> place to point it at a registry your nodes can reach; the cases and their exact
+> place to point it at a different registry, for a fork or an air-gapped cluster;
+> the cases and their exact
 > commands are in [deploy/k8s/README.md](deploy/k8s/README.md).
 
 > ⚠️ **`docker-compose.yml` does not work as written.** It publishes

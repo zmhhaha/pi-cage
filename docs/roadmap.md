@@ -30,9 +30,12 @@ equivalence was checked rather than assumed: **127 packages, identical names and
 versions; node v24.21.0 and ttyd 1.7.7 identical; the Pi bundle byte-identical**
 across both. Only the `ttyd` binary differs, and that is the per-architecture pin.
 
-**Still open:** the GHCR package is **private** by default. Until its visibility is
-switched to public, a cluster without an `imagePullSecret` cannot pull it — so the
-second acceptance criterion below is not met yet.
+**Also done:** the package is **public**, verified by pulling anonymously from a
+host with no stored credentials — it resolved the same index digest. So a node
+with no `imagePullSecret` can pull it, and both acceptance criteria below hold.
+
+The package is also linked to this repository, so the package page shows the
+project rather than an orphan image.
 
 ---
 
