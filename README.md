@@ -48,30 +48,47 @@ kubectl apply -k deploy/k8s
 
 ## Why this exists
 
-The Pi ecosystem already has excellent ways to run agents on a machine you control. `pi-cage` is not a better version of them — it makes **the opposite trade-off on purpose**.
+The Pi ecosystem has plenty of good ways to run an agent. `pi-cage` does not try to
+beat them — it covers the one layer they leave open: **a cluster with a network
+boundary.**
 
-| | [`pi-web`](https://github.com/jmfederico/pi-web) (873★) | [`pipod`](https://github.com/pi-pod/pipod) (160★) | **pi-cage** |
+The closest neighbours are [`pi-less-yolo`](https://github.com/cjermain/pi-less-yolo)
+(isolated local Docker, 165★) and [`pi-dispatch`](https://github.com/edgehero/pi-dispatch)
+(unattended jobs with budgets, 181★). Both are good, both are further along than this
+project on their own axes, and neither targets Kubernetes or ships an egress policy.
+
+| | [`pi-less-yolo`](https://github.com/cjermain/pi-less-yolo) (165★) | [`pi-dispatch`](https://github.com/edgehero/pi-dispatch) (181★) | **pi-cage** |
 |---|---|---|---|
-| Model | Host-integrated web UI | Self-hosted session platform | **Isolated container** |
-| Host access | **Docker socket + `/home` `/srv` `/opt` read-write + `hostexec`** | Sandbox service per pod | **None** |
-| Server shape | `sessiond` + `web`, systemd or its own Compose | Control plane + Postgres + OIDC + mobile apps | **One container** |
-| Auth | Bring your own reverse proxy | Zitadel OIDC | **Bring your own proxy, or none on loopback** |
-| Kubernetes | ✗ (installer fails closed without a Docker socket) | ✗ (Compose) | **✓ manifests included** |
-| License | MIT | AGPL-3.0 | MIT |
+| Shape | Local Docker wrapper (`mise run pi`) | Self-hosted job service | **Long-lived container in a cluster** |
+| Interactive session | ✓ that is the point | ✗ jobs only | **✓ `serve`** |
+| Job queue, spend caps | ✗ | **✓✓ far ahead here** | ✗ |
+| Drops all capabilities, no-new-privileges | ✓ | ✓ | ✓ |
+| Mounts your project directory | ✓ read-write, by design | read-only instructions | **nothing from the host** |
+| **Egress network boundary** | ✗ | ✗ | **✓ verified on a real cluster** |
+| **Kubernetes** | ✗ | ✗ | **✓ manifests included** |
+| One-command start | ✓ | ✓ | ✗ **see [docs/roadmap.md](docs/roadmap.md)** |
 
-`pi-web`'s Docker containers deliberately mount the Docker socket — *"root-equivalent on the Docker host"* — because its whole value proposition is letting the agent work where your real code, tools and credentials live. That is a defensible design. It is also the thing `pi-cage` refuses to do.
+`pi-web`'s Docker containers take a different tack on purpose — mounting
+`/var/run/docker.sock`, *"root-equivalent on the Docker host"* — because their value
+is running the agent where your real code and credentials already are. That is a
+defensible design; it is also what makes a Pod impossible, since the installer fails
+closed without a rootful local socket.
 
-**Use `pi-web` if you want an agent on your own machine. Use `pi-cage` if you want an agent somewhere you would not hand over a shell.**
+**Use `pi-less-yolo` on your laptop, `pi-dispatch` for unattended jobs, and
+`pi-cage` when the agent has to live in a cluster you would not hand a shell to.**
 
-The full competitive survey, with star counts and source links, is in [docs/prior-art.md](docs/prior-art.md).
+The full map, by layer, with the projects this project has learned from, is in
+[docs/prior-art.md](docs/prior-art.md).
+
 
 ---
 
 ## What it is not
 
-- **Not a web UI.** No chat interface is written here. `serve` exposes a terminal; if you want a rich UI, install [`pi-web`](https://github.com/jmfederico/pi-web) inside your own image (`custom-image.d` equivalent) — see [docs/prior-art.md](docs/prior-art.md).
+- **Not a web UI.** No chat interface is written here. `serve` exposes a terminal; if you want a rich UI, run [`agegr/pi-web`](https://github.com/agegr/pi-web) (7,315★, `npx @agegr/pi-web`) or [`jmfederico/pi-web`](https://github.com/jmfederico/pi-web) inside an image you build — see [docs/prior-art.md](docs/prior-art.md).
 - **Not multi-tenant.** One container, one user, one agent. There is no account system and none is planned.
-- **Not a host-development tool.** If you need the agent to touch host paths, this is the wrong project — use `pi-web`.
+- **Not a host-development tool.** If you need the agent to touch host paths, use [`pi-less-yolo`](https://github.com/cjermain/pi-less-yolo) — it does that deliberately and well.
+- **Not a job queue or a budget system.** [`pi-dispatch`](https://github.com/edgehero/pi-dispatch) covers that axis far better than this project plans to.
 - **Not a sandbox for hostile code you deliberately run.** It is a container boundary, with all the usual caveats of one.
 
 ---
@@ -213,10 +230,11 @@ Preflight refuses to produce a verdict at all if the cluster's policy no longer 
 |---|---|
 | [THREAT-MODEL.md](THREAT-MODEL.md) | Assets, adversaries, what is and is **not** defended. Read this before exposing anything. |
 | [SECURITY.md](SECURITY.md) | How to report a vulnerability. |
-| [docs/prior-art.md](docs/prior-art.md) | The 2026-10 competitive survey this design came from. |
+| [docs/prior-art.md](docs/prior-art.md) | The landscape by layer, what `pi-cage` claims and does not, and what to borrow from whom. |
 | [verify-hardening.sh](verify-hardening.sh) | Container-level checks: image vs run configuration, plus the refusals. |
 | [verify-network-boundary.sh](verify-network-boundary.sh) | Kubernetes boundary checks, probed from inside the real container. |
 | [docs/verification-log.md](docs/verification-log.md) | What has actually been checked, on what, and when — including what has **not**. |
+| [docs/roadmap.md](docs/roadmap.md) | What stands between "verified on one cluster" and "a stranger can use it". |
 
 
 ---
