@@ -69,6 +69,62 @@ authenticated-emails-file required.
 `cookie_secret` must be **exactly 16, 24 or 32 bytes**. An email allow-list —
 `email_domains` or `authenticated_emails_file` — is **mandatory**, not optional.
 
+## The failure that names the wrong thing entirely
+
+Worth its own section, because the error message sends you somewhere else.
+
+`oauth2-proxy` stores the session in a cookie by default. If the IdP issues large
+tokens — Casdoor's `id_token` and `access_token` are JWTs with a full claim set —
+the session can exceed the browser's 4 KB per-cookie limit, and oauth2-proxy says
+so at the moment it creates one:
+
+```
+[session_store.go:170] WARNING: Multiple cookies are required for this session as
+it exceeds the 4kb cookie limit. Please use server side session storage
+(eg. Redis) instead.
+```
+
+The consequence is not a clean failure. The session comes back **partially
+restored**: enough for oauth2-proxy to consider the request authenticated and
+forward it, but not enough to recover the email claim that
+`set_xauthrequest` needs to set `X-Auth-Request-Email`. `serve` then receives a
+request with no header and answers:
+
+```
+HTTP/1.1 407 Proxy Auth Required
+Proxy-Authenticate: Basic realm="ttyd"
+```
+
+**A browser reads a `407` as a proxy problem**, so the user sees
+`ERR_UNEXPECTED_PROXY_AUTH` — "the proxy requires authentication" — for what is
+actually a session-size problem, on a proxy that is running correctly and on an
+account that has already logged in successfully. The oauth2-proxy log shows
+`AuthSuccess` immediately before it.
+
+Two ways out, and they are not equivalent:
+
+| Fix | Effect | Cost |
+|---|---|---|
+| `session_cookie_minimal = true` | Strips the tokens from the cookie, keeps the identity claims — which is all `set_xauthrequest` reads | **Cannot be combined with `cookie_refresh`**; oauth2-proxy refuses to start. The session then lasts `cookie_expire` and asks for a fresh login instead of renewing. |
+| `session_store_type = "redis"` + `redis_connection_url` | Removes the size limit entirely, keeps refresh | A Redis to run, secure and keep available |
+
+The conflict is real and oauth2-proxy states it plainly:
+
+```
+invalid configuration:
+  cookie_refresh > 0 requires oauth tokens in sessions.
+  session_cookie_minimal cannot be set
+```
+
+**A note on disabling refresh deliberately.** A refresh that cannot succeed is
+worse than no refresh: an oauth2-proxy holding a session whose refresh token has
+been revoked retries that refresh on **every request** and never gives up. On the
+cluster this was measured on, one such session produced roughly **98 token
+requests per second** against the IdP's `/api/login/oauth`, exhausted the IdP's
+database connections, and took login down for **every** service behind it —
+surfacing as `Error 1040: Too many connections` on an unrelated page. A session
+that cannot refresh cannot loop.
+
 ---
 
 ## Recipe 1 — `oauth2-proxy` as a sidecar (recommended)
