@@ -125,6 +125,68 @@ database connections, and took login down for **every** service behind it —
 surfacing as `Error 1040: Too many connections` on an unrelated page. A session
 that cannot refresh cannot loop.
 
+## Moving the session server-side
+
+If the cookie is the problem, the durable fix is to stop keeping the session in
+it. `oauth2-proxy` supports Redis, and there are **two places the setting can
+live** — which matters more than it sounds:
+
+```
+# in the config file
+session_store_type = "redis"
+redis_connection_url = "redis://:redis-password@redis:6379/6"
+
+# or as flags, which the config file cannot do for a value that comes from a Secret
+args:
+  - --config=/oauth/oauth2-proxy.cfg
+  - --session-store-type=redis
+  - --redis-connection-url=redis://:$(REDIS_PASSWORD)@redis:6379/6
+```
+
+**`$(REDIS_PASSWORD)` is Kubernetes' own substitution, not shell.** Kubernetes
+expands `$(VAR)` inside `command`, `args` and `env` from the container's
+environment, so a password delivered by `envFrom: secretRef` can be spliced into a
+URL without the manifest ever containing it. This is verified working rather than
+assumed: with the expansion in place the proxy logs no Redis errors, and sessions
+appear in the target database with the expected TTL. It does **not** work inside a
+mounted config file — only in the fields Kubernetes itself expands.
+
+**A note on reviewing this later, because it cost real time here.** A config-file
+setting and a flag produce identical runtime behaviour, so a check that reads only
+one of them can report "not configured" about a deployment that is configured.
+Reading the config file, the `env` list and `envFrom` is not enough; `args` is
+where this kind of value usually ends up. That mistake was made — twice — while
+reviewing a working deployment.
+
+### What you take on
+
+Cookie sessions have **no server-side dependency**: a proxy that restarts loses
+nothing, and nothing else has to be up for a login to complete. Redis removes
+that property:
+
+| | Cookie session | Redis session |
+|---|---|---|
+| Session size limit | 4 KB per cookie | none |
+| Refresh loops possible | yes, unless refresh is off | yes, unless refresh is off |
+| Login depends on | the IdP only | **the IdP and Redis** |
+| Proxy restart | sessions survive (client holds them) | sessions survive (Redis holds them) |
+| Redis restart | irrelevant | sessions survive if persistence is on |
+
+**Redis becomes an availability dependency for every login behind it.** If it is
+unreachable, `oauth2-proxy` cannot store a session, so a user who authenticates
+correctly still does not get in — which is worse than the cookie limit it solves.
+Before adopting it, check that the Redis is:
+
+- **persistent** (`appendonly yes` — otherwise every restart logs everyone out),
+- **not evicting** under its memory policy — `allkeys-lru` will drop session keys
+  and log users out when the instance fills up, which is survivable but should be
+  a decision rather than a surprise,
+- **not a single point of failure** if the services behind it matter.
+
+Give each service its **own database or key prefix**. Sharing a database is not an
+exploit — the session payload is encrypted with that service's own `cookie_secret`,
+so a cross-read fails to decrypt — but it is untidy and it invites the question.
+
 ---
 
 ## Recipe 1 — `oauth2-proxy` as a sidecar (recommended)
@@ -313,6 +375,9 @@ use the `0.0.0.0` bind from Recipe 2 and point at the Service instead of
 | `oauth2-proxy` refuses to start without an email allow-list | **Tested**, same cluster. |
 | That `public-egress` admits only `role: cage`, and that a sidecar without that label cannot reach the IdP | **Observed**: the pod reached `Performing OIDC Discovery...` and never progressed. The policy selectors quoted above were read from the live cluster. |
 | That `proxy-ingress` admits only port 7681, so a sidecar on 4180 is unreachable | **Read from the live policy.** Not exercised end to end. |
-| The sidecar manifest in Recipe 1 | **Not applied.** It is assembled from a working production config and the live policies, and reviewed — but this project's standard is that unapplied means unverified. |
+| The sidecar manifest in Recipe 1 | **Applied and running** on a real cluster, `2/2`, with the loopback property asserted (both address families). The full browser login through it is still unverified. |
 | A complete login in a browser, through to a working terminal | **Never done.** The header mechanics are tested; the OIDC round trip and the WebSocket upgrade through a real proxy are not. |
 | `set_xauthrequest` and `proxy_websockets` being required | **From a working production configuration**, not from a failure reproduced here. |
+| The session exceeding the 4 KB cookie limit, and the `407`/`ERR_UNEXPECTED_PROXY_AUTH` it produces | **Observed**: oauth2-proxy logged the warning itself, immediately after an `AuthSuccess` for the same session, and `serve` answers `407` to a request without the header. |
+| `$(REDIS_PASSWORD)` in `args` being expanded by Kubernetes | **Verified in production**: the proxy logs no Redis errors and sessions appear in the target database with the expected TTL. |
+| That a Redis outage would block logins | **Not tested.** Follows from oauth2-proxy needing to store the session, and is the reason the trade-off table above exists. |
