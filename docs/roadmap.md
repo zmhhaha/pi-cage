@@ -65,22 +65,42 @@ project advertises, and that should be a decision, not a side effect.
 
 ---
 
-## 3. Exercise `run` and `json`
+## 3. Exercise `run` and `json` — **partly done, 2026-10-15**
 
 **Why.** `serve` has been exercised on a real cluster (the pane shows Pi's TUI).
-**`run` and `json` have never been run at all.** They appear in the README as
+**`run` and `json` had never been run at all.** They appeared in the README as
 supported modes on the strength of upstream's documentation alone, which is
 exactly the kind of unverified claim this project exists to avoid.
 
-**Acceptance**
+**Done without a credential, because the failure path is half the contract.**
+Both modes were run against the published image with no API key configured:
 
-- `pi-server run "reply with the single word ok"` prints `ok` to stdout and exits 0.
-- `pi-server json "..."` emits parseable JSONL.
-- A non-zero exit is produced for a failed run (the `--print` contract).
-- Results recorded in [verification-log.md](verification-log.md).
+| | exit | stdout | stderr |
+|---|---|---|---|
+| `run "reply with the single word ok"` | `1` | **0 bytes** | `No API key found for the selected model.` |
+| `json "…"` | `1` | **1 line of valid JSON** | the same |
+| an unknown mode | `1` | nothing | the usage block |
 
-**Blocked on:** a provider credential. No model call has ever been made from this
-image, so this cannot be done without one.
+Three real facts, none of them previously established:
+
+- **A failed `run` leaves stdout empty.** The mode exists to put the agent's final
+  text on stdout so it can be piped, and a diagnostic leaking into that stream
+  would corrupt every consumer. Diagnostics go to stderr, and `die()` and `log()`
+  in `pi-server` both write there by construction.
+- **`json` emits valid JSONL**, and the first record survives a failure:
+  `{"type":"session","version":3,"id":"…","timestamp":"…","cwd":"/workspace"}`.
+  A consumer therefore gets a session line before the error, not a broken stream.
+- **`run` and `json` dispatch correctly at all.** They reach the model call and
+  fail there, which is a different claim from "the modes are wired up".
+
+Also settled: an unknown mode exits **1**, not 2. `pi-server` routes every fatal
+path through `die()`, so all of its failures share one code; the 2 in `build.sh`
+is that script's own convention for a usage error. Not a discrepancy.
+
+**Still open: the success path.** No model call has been made, so "prints `ok` and
+exits 0" remains untested. That needs a provider credential and nothing else —
+and the deployment is already waiting for one at
+`panghu_chat/pi`.
 
 ---
 

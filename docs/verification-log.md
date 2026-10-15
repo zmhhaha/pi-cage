@@ -461,11 +461,50 @@ real proxy remain unverified, and `auth.md` says so in its own table.
 
 ---
 
+## 2026-10-15 — What `run` and `json` do when they fail
+
+Both modes had never been executed. They could not be exercised on their success
+path without a provider credential, but **the failure path is half the contract**,
+and it needs nothing:
+
+| | exit | stdout | stderr |
+|---|---|---|---|
+| `run "reply with the single word ok"` | `1` | **0 bytes** | `No API key found for the selected model.` |
+| `json "…"` | `1` | **1 line, valid JSON** | the same |
+| an unknown mode | `1` | nothing | the usage block |
+
+Run against `ghcr.io/zmhhaha/pi-cage:latest` with no API-key environment variable
+present at all, capturing stdout and stderr separately.
+
+**Three facts, none previously established:**
+
+- **A failed `run` leaves stdout empty.** The mode exists so the agent's final
+  text can be piped; a diagnostic leaking into stdout would corrupt every
+  consumer. `pi-server` routes both `log()` and `die()` to stderr by construction,
+  and this confirms the arrangement holds on the failure path rather than only
+  being intended.
+- **`json` emits valid JSONL, and the first record survives the failure:**
+  `{"type":"session","version":3,"id":"…","timestamp":"…","cwd":"/workspace"}`.
+  A consumer gets a session line before the error instead of a broken stream.
+- **`run` and `json` dispatch correctly at all.** They reach the model call and
+  fail there. That is a different claim from "the modes are wired up", and it is
+  the one the README was making on the strength of upstream's documentation.
+
+**Also settled:** an unknown mode exits **1**, not 2. `pi-server` sends every
+fatal path through `die()`, so all of its failures share a code; the `2` in
+`build.sh` is that script's own convention for a usage error. Not a discrepancy,
+and worth writing down because it looked like one.
+
+**Still unverified:** the success path. "Prints `ok` and exits 0" remains untested
+and still needs a credential.
+
+---
+
 ## Not yet verified
 
 | Claim | Status |
 |---|---|
-| **Any model call** | **Never made.** The TUI starts and reports "No models available"; no provider credentials are configured and no prompt has been run in this image. `run` and `json` are therefore documented from upstream's spec, not from a test. |
+| **Any model call** | **Never made.** No provider credential has ever been configured. The `run` and `json` *failure* paths are now exercised (above); their success paths are not, and the TUI still starts and reports "No models available". |
 | **`docker-compose.yml` works** | **It does not.** It publishes `127.0.0.1:7681:7681` while the container binds loopback — the same contradiction as the Kubernetes manifest, and the same fix does not apply cleanly. Options and their costs are in [roadmap.md](roadmap.md). |
 | `serve` through a real authenticating proxy, in a browser | **Never run.** The header mechanics are tested (see the section below), but no proxy has ever injected the header and no WebSocket upgrade has crossed a tunnel. |
 | The auth recipe in [auth.md](auth.md) | **Partly.** The header behaviour is measured and two `oauth2-proxy` misconfigurations were reproduced; the sidecar manifest has not been applied. |
