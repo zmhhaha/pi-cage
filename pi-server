@@ -18,7 +18,7 @@ readonly WORKDIR="${PI_CAGE_WORKDIR:-/workspace}"
 # below.
 BIND="${PI_CAGE_BIND:-127.0.0.1}"
 PORT="${PI_CAGE_PORT:-7681}"
-AUTH_HEADER="${PI_CAGE_AUTH_HEADER-X-Auth-Request-Email}"
+AUTH_HEADER="${PI_CAGE_AUTH_HEADER-X-Forwarded-Email}"
 
 log() { printf 'pi-cage: %s\n' "$*" >&2; }
 die() { printf 'pi-cage: error: %s\n' "$*" >&2; exit 1; }
@@ -64,7 +64,7 @@ Environment:
   PI_CAGE_SESSION        tmux session name (default main)
   PI_CAGE_MAX_CLIENTS    concurrent web terminal clients (default 1)
   PI_CAGE_AUTH_HEADER    header the fronting proxy must inject
-                         (default X-Auth-Request-Email; empty disables)
+                         (default X-Forwarded-Email; empty disables)
   PI_CAGE_ALLOW_PUBLIC   set to 1 to allow a non-loopback bind
 
 Serve mode binds loopback and requires an auth header. Both are fail-closed

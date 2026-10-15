@@ -10,23 +10,78 @@ enforced by the container itself — the answer is: less than you would like.
 |---|---|
 | Default bind | `127.0.0.1`. It refuses anything else without `PI_CAGE_ALLOW_PUBLIC=1`. |
 | Non-loopback bind | Refused **unless** an auth header is configured. Binding `0.0.0.0` with authentication turned off is not possible. |
-| `PI_CAGE_AUTH_HEADER` | Defaults to `X-Auth-Request-Email`. Read with `-`, not `:-`, so **unset means required** and only an explicit empty value (`PI_CAGE_AUTH_HEADER=`) disables it. |
+| `PI_CAGE_AUTH_HEADER` | Defaults to `X-Forwarded-Email`. Read with `-`, not `:-`, so **unset means required** and only an explicit empty value (`PI_CAGE_AUTH_HEADER=`) disables it. |
 | Header check | Performed by `ttyd` on **every** request, including the WebSocket upgrade. A request without it gets `407 Proxy Auth Required`. |
 
 Both refusals are covered by [`verify-hardening.sh`](../verify-hardening.sh), which
 fails if they stop holding.
 
+## The header name has to match what your proxy sends
+
+**Read this before anything else on this page.** It is the failure that cost the
+most time to find, and everything about it points the wrong way.
+
+`serve` reads whatever header `PI_CAGE_AUTH_HEADER` names. It does not know or
+care which one, so the name has to agree with your proxy. `oauth2-proxy` makes
+that harder than it should be, because its two similarly-named flags do different
+things — and its own `--help` is the only place that says so plainly:
+
+```
+--pass-user-headers   pass X-Forwarded-User and X-Forwarded-Email information to
+                      upstream                                        (default true)
+--set-xauthrequest    set X-Auth-Request-User and X-Auth-Request-Email *response*
+                      headers (useful in Nginx auth_request mode)
+```
+
+**`X-Auth-Request-*` is the answer to a different question.** It is set on the
+*response* for a fronting nginx in `auth_request` mode to read. It is **not** put
+on the request handed to the upstream. No flag does that.
+
+So with `oauth2-proxy` in reverse-proxy mode — the shape both recipes below use —
+the header that actually arrives is **`X-Forwarded-Email`**, and it arrives by
+default. `PI_CAGE_AUTH_HEADER` has to say so.
+
+Solving for the wrong one gives this, and every part of it misleads:
+
+```
+oauth2-proxy log : [AuthSuccess] Authenticated via OAuth2: Session{email:...}
+serve            : HTTP/1.1 407 Proxy Auth Required
+browser          : ERR_UNEXPECTED_PROXY_AUTH
+```
+
+The user logged in successfully. The session was real. The proxy was configured
+correctly. **The container was listening for a name nothing ever said.** And the
+browser reports it as a *proxy* problem, which sends you to the proxy, which is
+the one component that is working.
+
+### Whichever you choose, the proxy must set or strip it
+
+Both names are bearer tokens once they reach `serve`, so the requirement is the
+same: **the fronting proxy must overwrite or strip the header**, never pass a
+client's value through. `oauth2-proxy` does this by default
+(`--skip-auth-strip-headers`). A bare nginx `proxy_pass` does not — it must
+`proxy_set_header` the value explicitly, as Recipe 3 does.
+
+`X-Forwarded-*` is a busier namespace: other infrastructure is more likely to set
+a header with that prefix by accident than one named `X-Auth-Request-*`. That is
+the one argument for the more specific name. It is not enough to outweigh a
+default that does not work with the documented proxy.
+
 ## The header is a bearer token, not an identity
 
-Measured against a running `serve` with `PI_CAGE_AUTH_HEADER=X-Auth-Request-Email`:
+Measured against a running `serve` with the configured header name:
 
 | Request | Result |
 |---|---|
 | no header | `407` |
-| `X-Auth-Request-Email: someone@example.com` | `200` |
-| `X-Auth-Request-Email: x` | `200` |
-| `X-Auth-Request-Email:` (empty) | `407` |
-| `X-Auth-Request-Email: $(id)` | `200` |
+| `X-Forwarded-Email: someone@example.com` | `200` |
+| `X-Forwarded-Email: x` | `200` |
+| `X-Forwarded-Email:` (empty) | `407` |
+| `X-Forwarded-Email: $(id)` | `200` |
+
+The name is irrelevant to the result — the same five rows were produced with
+`X-Auth-Request-Email` as the configured header, before the deployment above was
+pointed at the right one.
 
 **`ttyd` checks presence and non-emptiness. It does not check the value, and it
 does not verify any signature.** Anything that can open a connection to the port
@@ -41,7 +96,7 @@ This is why the [THREAT-MODEL](../THREAT-MODEL.md) calls the container a boundar
 and not a multi-tenant platform, and why `deploy/k8s/` ships a default-deny policy
 rather than relying on the header alone.
 
-## The three settings that decide whether it works
+## Three settings that decide whether it works
 
 Taken from a working `oauth2-proxy` deployment running in production on the same
 cluster this project was verified against. Each of these fails *quietly* — the
@@ -49,9 +104,13 @@ login succeeds and the terminal still does not work.
 
 | Setting | Why |
 |---|---|
-| `set_xauthrequest = true` | **Without it, `oauth2-proxy` does not emit `X-Auth-Request-Email` at all.** It sets `X-Forwarded-*`, which is not what `serve` reads. Every request gets `407` after a successful login. This is the single most common reason an otherwise correct OIDC setup fails. |
+| `PI_CAGE_AUTH_HEADER` matching the proxy | See the section above. In reverse-proxy mode the arriving header is `X-Forwarded-Email`; the container defaults to that name, so this only bites if you change one side without the other. |
 | `proxy_websockets = true` | `ttyd` is a WebSocket terminal. Without this the page loads and the terminal never connects. |
 | `upstreams = ["http://127.0.0.1:7681/"]` | The proxy must share the network namespace with `serve` if you want to keep the loopback bind. Different namespace means the cage has to bind `0.0.0.0`. |
+
+`set_xauthrequest = true` is **not** on this list. An earlier version of this
+document claimed it was required; it is not. It sets response headers for
+`auth_request` mode and has no effect on what reaches the upstream.
 
 ## Two settings that stop `oauth2-proxy` from starting at all
 
@@ -86,9 +145,8 @@ it exceeds the 4kb cookie limit. Please use server side session storage
 
 The consequence is not a clean failure. The session comes back **partially
 restored**: enough for oauth2-proxy to consider the request authenticated and
-forward it, but not enough to recover the email claim that
-`set_xauthrequest` needs to set `X-Auth-Request-Email`. `serve` then receives a
-request with no header and answers:
+forward it, but not enough to recover the email claim it needs to set the identity
+header. `serve` then receives a request with no header and answers:
 
 ```
 HTTP/1.1 407 Proxy Auth Required
@@ -105,7 +163,7 @@ Two ways out, and they are not equivalent:
 
 | Fix | Effect | Cost |
 |---|---|---|
-| `session_cookie_minimal = true` | Strips the tokens from the cookie, keeps the identity claims — which is all `set_xauthrequest` reads | **Cannot be combined with `cookie_refresh`**; oauth2-proxy refuses to start. The session then lasts `cookie_expire` and asks for a fresh login instead of renewing. |
+| `session_cookie_minimal = true` | Strips the tokens from the cookie, keeps the identity claims | **Cannot be combined with `cookie_refresh`**; oauth2-proxy refuses to start. The session then lasts `cookie_expire` and asks for a fresh login instead of renewing. It is also documented as "(cookie session store only)", so under Redis its effect is **uncertain** — which is reason enough not to keep it once Redis removes the limit it was written for. |
 | `session_store_type = "redis"` + `redis_connection_url` | Removes the size limit entirely, keeps refresh | A Redis to run, secure and keep available |
 
 The conflict is real and oauth2-proxy states it plainly:
@@ -219,8 +277,10 @@ data:
     oidc_issuer_url = "https://your-idp.example.com"
     redirect_url = "https://pi-cage.example.com/oauth2/callback"
     upstreams = ["http://127.0.0.1:7681/"]
-    # Without this, no X-Auth-Request-Email is sent and serve answers 407 for ever.
-    set_xauthrequest = true
+    # Nothing here needs to be set for the identity header: --pass-user-headers
+    # is on by default and emits X-Forwarded-Email upstream, which is what
+    # PI_CAGE_AUTH_HEADER defaults to. See "The header name has to match what
+    # your proxy sends" above before changing either side.
     # ttyd is a websocket; without this the terminal never loads.
     proxy_websockets = true
     # Exactly 16, 24 or 32 bytes. 32 random bytes, base64 or raw.
@@ -258,8 +318,12 @@ spec:
           env:
             # No PI_CAGE_BIND and no PI_CAGE_ALLOW_PUBLIC: the loopback default
             # is kept, and the sidecar reaches it over 127.0.0.1 in this netns.
+            #
+            # Matches what oauth2-proxy sends upstream. If you change the proxy's
+            # header behaviour, change this too -- they are one setting split
+            # across two files.
             - name: PI_CAGE_AUTH_HEADER
-              value: X-Auth-Request-Email
+              value: X-Forwarded-Email
           # ... securityContext, resources, probes and volumes as in deploy/k8s/core.yaml
         - name: oauth2-proxy
           image: quay.io/oauth2-proxy/oauth2-proxy:v7.8.0
@@ -375,9 +439,11 @@ use the `0.0.0.0` bind from Recipe 2 and point at the Service instead of
 | `oauth2-proxy` refuses to start without an email allow-list | **Tested**, same cluster. |
 | That `public-egress` admits only `role: cage`, and that a sidecar without that label cannot reach the IdP | **Observed**: the pod reached `Performing OIDC Discovery...` and never progressed. The policy selectors quoted above were read from the live cluster. |
 | That `proxy-ingress` admits only port 7681, so a sidecar on 4180 is unreachable | **Read from the live policy.** Not exercised end to end. |
-| The sidecar manifest in Recipe 1 | **Applied and running** on a real cluster, `2/2`, with the loopback property asserted (both address families). The full browser login through it is still unverified. |
-| A complete login in a browser, through to a working terminal | **Never done.** The header mechanics are tested; the OIDC round trip and the WebSocket upgrade through a real proxy are not. |
-| `set_xauthrequest` and `proxy_websockets` being required | **From a working production configuration**, not from a failure reproduced here. |
+| The sidecar manifest in Recipe 1 | **Applied and running** on a real cluster, `2/2`, with the loopback property asserted (both address families). |
+| **A complete login in a browser, through to a working terminal** | **Done, 2026-10-15.** Real cluster, real Casdoor, real oauth2-proxy sidecar. Login, redirect back, session, WebSocket upgrade across the proxy, and a live `tmux` session inside the container (`main: 1 windows ... (attached)`). |
+| That the header name must match the proxy | **Reproduced and then fixed.** With the container reading `X-Auth-Request-Email` while oauth2-proxy sent `X-Forwarded-Email`: `AuthSuccess` in the proxy log, `407` from `serve`, `ERR_UNEXPECTED_PROXY_AUTH` in the browser. Pointing the container at `X-Forwarded-Email` made the same login work. |
+| `proxy_websockets` being required | **Indirectly verified**: the terminal works end to end with it on. It has not been switched off to observe the failure. |
+| `set_xauthrequest` being required | **Refuted.** The working deployment does not rely on it, and oauth2-proxy's help describes it as a response header for `auth_request` mode. |
 | The session exceeding the 4 KB cookie limit, and the `407`/`ERR_UNEXPECTED_PROXY_AUTH` it produces | **Observed**: oauth2-proxy logged the warning itself, immediately after an `AuthSuccess` for the same session, and `serve` answers `407` to a request without the header. |
 | `$(REDIS_PASSWORD)` in `args` being expanded by Kubernetes | **Verified in production**: the proxy logs no Redis errors and sessions appear in the target database with the expected TTL. |
 | That a Redis outage would block logins | **Not tested.** Follows from oauth2-proxy needing to store the session, and is the reason the trade-off table above exists. |

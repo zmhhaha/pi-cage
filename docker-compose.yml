@@ -73,7 +73,7 @@ services:
       #
       # `${VAR-default}` (no colon) is deliberate: it applies the default only
       # when the variable is UNSET, so an explicit empty value stays empty.
-      PI_CAGE_AUTH_HEADER: "${PI_CAGE_AUTH_HEADER-X-Auth-Request-Email}"
+      PI_CAGE_AUTH_HEADER: "${PI_CAGE_AUTH_HEADER-X-Forwarded-Email}"
 
     # --- resources ----------------------------------------------------------
     # No cluster or daemon applies a default quota; state them explicitly.

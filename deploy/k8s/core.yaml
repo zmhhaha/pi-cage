@@ -152,11 +152,27 @@ spec:
               value: 0.0.0.0
             - name: PI_CAGE_ALLOW_PUBLIC
               value: "1"
-            # Keep the proxy-supplied auth header enabled. The Service is only
-            # reachable through the labelled ingress source in
-            # networkpolicy.yaml, so the header cannot be forged from outside.
+            # Match this to what your proxy actually sends. Getting it wrong is a
+            # silent failure that surfaces as a proxy error.
+            #
+            # X-Forwarded-Email is what oauth2-proxy sends upstream in
+            # reverse-proxy mode, through --pass-user-headers, which is on by
+            # default. Its --set-xauthrequest flag does something else: it sets
+            # X-Auth-Request-User and X-Auth-Request-Email as *response* headers
+            # for a fronting nginx in auth_request mode to read, and does not put
+            # them on the request handed to the upstream.
+            #
+            # Choosing the wrong name produces: a successful login, an AuthSuccess
+            # in the proxy log, then `407 Proxy Auth Required` from serve and
+            # ERR_UNEXPECTED_PROXY_AUTH in the browser -- an error naming a proxy
+            # problem for a header that never matched.
+            #
+            # Whatever you choose, the proxy must set or strip it. oauth2-proxy
+            # strips client-supplied X-Forwarded-* by default
+            # (--skip-auth-strip-headers); a bare nginx proxy_pass does not, so it
+            # would have to overwrite the header explicitly.
             - name: PI_CAGE_AUTH_HEADER
-              value: X-Auth-Request-Email
+              value: X-Forwarded-Email
           resources:
             # State these explicitly. Nothing in this manifest's target cluster
             # supplies a default quota.

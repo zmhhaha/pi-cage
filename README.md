@@ -10,7 +10,7 @@ Pi has no built-in sandbox — by design, its `bash` tool runs commands with the
 >
 > **Verified so far:** both architectures build; `ttyd` is downloaded and SHA-256 verified, and the pin was confirmed against a second transport; Pi installs at an exact pinned version; the build-time gates in [`docker/assert-image.sh`](docker/assert-image.sh) pass; the container hardening holds on a real container — read-only root filesystem, all capabilities dropped, no-new-privileges, **no Docker socket, no host paths**; every internal target and the metadata address are refused from inside the container; an unlabelled Pod cannot reach the web terminal while a labelled one can, and gets `407` without the auth header; all four fail-closed refusals refuse; and **the agent has been given real work** — `run` and `json` both succeed, and a task that tried to write outside its workspace was refused by the read-only root and reported the real `EROFS` error.
 >
-> **Not yet verified:** `serve` has not been driven through a real authenticating proxy in a browser, and `docker-compose.yml` is currently unusable — see the quick start. [THREAT-MODEL.md](THREAT-MODEL.md) records what is not defended at all; [docs/verification-log.md](docs/verification-log.md) records what was checked, when, and on what.
+> **Verified end to end:** a login completed in a real browser against a real IdP, through an `oauth2-proxy` sidecar, and reached a working terminal — WebSocket upgrade included. **Not yet verified:** `docker-compose.yml` is currently unusable — see the quick start. [THREAT-MODEL.md](THREAT-MODEL.md) records what is not defended at all; [docs/verification-log.md](docs/verification-log.md) records what was checked, when, and on what.
 
 
 ---
@@ -39,7 +39,7 @@ assumed:
   `127.0.0.1` mean the same address on both sides. **Nothing is published, so
   nothing is exposed beyond loopback** — that is the whole point of the trade.
 - **`PI_CAGE_AUTH_HEADER=` disables the auth header**, which otherwise defaults to
-  `X-Auth-Request-Email` (the variable is read with `-`, not `:-`, so *unset* means
+  `X-Forwarded-Email` (the variable is read with `-`, not `:-`, so *unset* means
   the header is required and only an explicit empty value turns it off). Acceptable
   only because the bind is loopback and the browser is on the same machine.
 - **`chown 10001:10001` is required**: the container runs as uid `10001` and a bind
@@ -190,9 +190,11 @@ docker inspect <container> --format '{{range .Mounts}}{{.Source}} {{end}}' # no 
 
 `pi-cage` does not ship an authenticating proxy. That is a deliberate scope choice — bundling an OIDC stack would make this an identity product, and there are better ones.
 
-`serve` trusts a header injected by whatever sits in front of it (`X-Auth-Request-Email` by default). Put a real proxy there. The Kubernetes manifests pair with any ingress that sets that header; with Compose, put Caddy, Traefik, `oauth2-proxy` or Tailscale in front.
+`serve` trusts a header injected by whatever sits in front of it, named by `PI_CAGE_AUTH_HEADER` (`X-Forwarded-Email` by default). Put a real proxy there. The Kubernetes manifests pair with any ingress that sets that header; with Compose, put Caddy, Traefik, `oauth2-proxy` or Tailscale in front.
 
-**The header is a bearer token, not an identity.** `ttyd` checks that it is present and non-empty and nothing else — `X-Auth-Request-Email: x` is accepted. So the header is worth exactly as much as your control over who can reach the port and who can set it, and a NetworkPolicy or a private network is doing the real work. This is measured, not assumed; the requests and their status codes are in [docs/auth.md](docs/auth.md).
+**The name must match what your proxy actually sends, and `oauth2-proxy` makes that easy to get wrong.** In reverse-proxy mode it sends `X-Forwarded-Email` — that is the default, through `--pass-user-headers`. Its `--set-xauthrequest` flag sets `X-Auth-Request-*` as *response* headers for nginx `auth_request` mode and does **not** put them on the request handed upstream. Choosing the wrong one gives a successful login, an `AuthSuccess` in the proxy log, and then `407` from `serve` — which a browser reports as `ERR_UNEXPECTED_PROXY_AUTH`, blaming the one component that is working. The full account is in [docs/auth.md](docs/auth.md).
+
+**The header is a bearer token, not an identity.** `ttyd` checks that it is present and non-empty and nothing else — a value of `x` is accepted. So the header is worth exactly as much as your control over who can reach the port and who can set it, and a NetworkPolicy or a private network is doing the real work. This is measured, not assumed; the requests and their status codes are in [docs/auth.md](docs/auth.md).
 
 Copy-pasteable configurations for `oauth2-proxy` with OIDC (sidecar and separate-pod), and for Caddy or nginx without an IdP, are in **[docs/auth.md](docs/auth.md)** — including the three settings that decide whether it works at all, two of which fail silently after a successful login.
 

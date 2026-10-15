@@ -130,9 +130,14 @@ Written from a **working production `oauth2-proxy` deployment on the same cluste
 this project is verified against**, not from the upstream README, and that is where
 the useful parts came from:
 
-- **`set_xauthrequest = true`** — without it `oauth2-proxy` never emits
-  `X-Auth-Request-Email`, so every request gets `407` *after* a successful login.
-  Silent, and the most likely reason a correct OIDC setup still fails.
+- **The header name has to match what the proxy sends** — the one that cost the most
+  time. `oauth2-proxy` emits `X-Forwarded-Email` upstream by default
+  (`--pass-user-headers`); its `--set-xauthrequest` sets `X-Auth-Request-*` as
+  *response* headers for nginx `auth_request` mode, not on the upstream request.
+  Getting it wrong produces a successful login, an `AuthSuccess` in the proxy log,
+  and then `407` from `serve` — reported by the browser as
+  `ERR_UNEXPECTED_PROXY_AUTH`, which blames the proxy. The container now defaults to
+  the name that works.
 - **`proxy_websockets = true`** — ttyd is a WebSocket; without it the page loads and
   the terminal never connects.
 - Two misconfigurations that stop `oauth2-proxy` from starting, both hit while
@@ -145,12 +150,13 @@ the useful parts came from:
 
 **And the thing worth stating loudest**, measured against a running `serve`:
 `ttyd` checks that the auth header is present and non-empty and **nothing else**.
-`X-Auth-Request-Email: x` gets `200`; `$(id)` gets `200`. The header is a bearer
-token, not an identity, and all the actual security is in who can reach the port.
+A value of `x` gets `200`; `$(id)` gets `200`. The header is a bearer token, not an
+identity, and all the actual security is in who can reach the port.
 
-**Not done:** the sidecar manifest has not been applied, and no login has been
-completed in a browser — the OIDC round trip and the WebSocket upgrade through a
-real proxy are still unverified. Recorded in the table at the end of `auth.md`.
+**Done:** the sidecar manifest is applied and running, and **a login was completed
+in a browser through to a working terminal** — real cluster, real Casdoor, WebSocket
+upgrade across the proxy, and a live `tmux` session inside the container. That was
+the last item this roadmap had left unverified anywhere.
 
 ---
 

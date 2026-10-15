@@ -434,13 +434,11 @@ protects a deployment lives outside the container: the network policy that decid
 who can reach the port, and the single proxy that is supposed to set the header.
 
 The failure mode this rules out is the comfortable one — that a valid-looking
-`X-Auth-Request-Email` means the request came from an authenticated user. It does
-not mean that. It means whoever sent it could open a TCP connection.
+identity header means the request came from an authenticated user. It does not
+mean that. It means whoever sent it could open a TCP connection.
 
 ### Also established, from a working production configuration
 
-- `set_xauthrequest = true` is required for `oauth2-proxy` to emit the header at
-  all; a correct OIDC login still ends in `407` without it.
 - `proxy_websockets = true` is required or the terminal never connects.
 - `cookie_secret` must be exactly 16, 24 or 32 bytes, and an email allow-list is
   mandatory. Both were reproduced as startup failures rather than taken on faith.
@@ -452,6 +450,14 @@ One of those was observed rather than inferred: a sidecar without `role: cage`
 reached `Performing OIDC Discovery...` and never progressed, because
 `default-deny` denies egress to every pod in the namespace and only `role: cage`
 gets a public-egress rule.
+
+> **Correction, 2026-10-15.** This section previously claimed that
+> `set_xauthrequest = true` was required for `oauth2-proxy` to emit the identity
+> header, and that without it a correct login still ends in `407`. **That was
+> wrong**, and it was the single most expensive wrong belief in this log — it was
+> copied from a production config without checking, and it sent a working
+> deployment hunting through the proxy for a problem that was in this project's
+> default. See the `/ws` section and the header-name section below.
 
 ### Not established
 
@@ -591,10 +597,13 @@ sidecars, `pi-oidc` delivered from Vault, Pod `2/2`.
 
 ### The test that mattered, and passed
 
-`oauth2-proxy` sets `X-Auth-Request-Email` on what it forwards upstream. If it also
-forwarded a header the *client* supplied, then anything able to reach port 4180
-would bypass Casdoor by sending one line — and 4180 is what the public tunnel
-fronts. So it was worth trying to forge it:
+`oauth2-proxy` sets an identity header on what it forwards upstream — at the time
+this test was written the header was believed to be `X-Auth-Request-Email`, and the
+tests below used that name. The name turned out to be wrong (see the section after
+this one) but the test is unaffected: what mattered was whether a *client-supplied*
+header survived. If it did, anything able to reach port 4180 would bypass Casdoor by
+sending one line — and 4180 is what the public tunnel fronts. So it was worth trying
+to forge it:
 
 | Request to the proxy | Result |
 |---|---|
@@ -652,16 +661,98 @@ on the header for that path.
 
 The unauthenticated redirect carries the real client id and
 `redirect_uri=https://pi.panghuer.top/oauth2/callback`, so the Casdoor application
-is wired correctly. What remains untested is a completed login in a browser and a
-WebSocket upgrade crossing the proxy — those need a human with a browser session.
+is wired correctly.
+
+---
+
+## 2026-10-15 — A login in a browser, and the header name that was wrong all along
+
+**This closes the last item this project had never verified anywhere.** Real
+cluster, real Casdoor, real `oauth2-proxy` sidecar, real browser: login, redirect
+back, session, WebSocket upgrade across the proxy, and a live terminal.
+
+Evidence from inside the container afterwards:
+
+```
+$ tmux ls
+main: 1 windows (created Thu Oct 15 23:29:23 2026) (attached)
+```
+
+`(attached)` is a `ttyd` client connected — the browser's WebSocket reached `serve`
+through the proxy.
+
+### What was actually wrong
+
+The deployment had been failing with `ERR_UNEXPECTED_PROXY_AUTH`, which is a
+browser reporting a `407`, and `serve` answers `407` when the identity header is
+missing. The proxy log showed `AuthSuccess` for the same session one line earlier.
+So: authenticated, forwarded, and the header was not arriving.
+
+**The header name did not match.** `serve` was reading `X-Auth-Request-Email`
+because that was `pi-server`'s default, and it was believed to be what
+`oauth2-proxy` sends. It is not. `oauth2-proxy`'s own help is unambiguous:
+
+```
+--pass-user-headers   pass X-Forwarded-User and X-Forwarded-Email information to
+                      upstream                                        (default true)
+--set-xauthrequest    set X-Auth-Request-User and X-Auth-Request-Email *response*
+                      headers (useful in Nginx auth_request mode)
+```
+
+`X-Auth-Request-*` is `auth_request` mode's answer to a different question: it is
+set on the **response** for a fronting nginx to read, and it is never put on the
+request handed to the upstream. No flag does that. `X-Forwarded-Email` does arrive,
+by default.
+
+Pointing `PI_CAGE_AUTH_HEADER` at `X-Forwarded-Email` made the identical login work.
+`pi-server`'s default has been changed to match, because a default that does not work
+with the documented proxy is worse than no default.
+
+### Why the evidence pointed the wrong way
+
+Every layer reported something true, and together they pointed at the one component
+that was working:
+
+| Layer | What it said | What it meant |
+|---|---|---|
+| Casdoor | login succeeded | correct |
+| `oauth2-proxy` | `AuthSuccess ... email:...` | correct, session real |
+| browser | `ERR_UNEXPECTED_PROXY_AUTH` | a **proxy** problem, allegedly |
+| `serve` | `407 Proxy Auth Required` | the header was absent, not that the proxy was broken |
+
+Both error strings name the proxy. Neither names the header.
+
+### Where the wrong belief came from
+
+It was copied from a working production config on the same cluster that sets
+`set_xauthrequest = true` — and that config works, because **its upstream reads
+`X-Forwarded-User`, which arrives regardless.** The flag is inert there. Reading it
+as evidence that the flag produces the header was the mistake, and it is exactly the
+kind this project exists to avoid: a plausible inference from a working system,
+never tested.
+
+The cluster held the disproof the whole time — `injectRequestHeaders` in
+`oauth/k8s/{proxy,hublog,game,txt2img}-configmap.yaml` all emit `X-Forwarded-User`,
+and every application reads `request.headers["X-Forwarded-User"]`. Nothing anywhere
+used `X-Auth-Request-Email` except the file written for this project.
+
+### Still open
+
+The `/ws` question above is unchanged and no longer blocking: a browser terminal
+works through the proxy, so the deployed path is fine. What remains unexplained is
+the direct observation that `ttyd` grants a WebSocket upgrade **without** the header
+when probed on loopback — `101` where the HTTP path gives `407`. In this deployment
+that path is unreachable, but the shipped `deploy/k8s/core.yaml` binds `0.0.0.0` and
+leans on the header, so it should not stay unexplained.
+
 ## Not yet verified
 
 | Claim | Status |
 |---|---|
 | **Any model call** | **Done, 2026-10-15.** Both `run` and `json` succeed against `DEEPSEEK_API_KEY` delivered from Vault, and a real file-writing task with a boundary probe completed. See the section above. |
 | **`docker-compose.yml` works** | **It does not.** It publishes `127.0.0.1:7681:7681` while the container binds loopback — the same contradiction as the Kubernetes manifest, and the same fix does not apply cleanly. Options and their costs are in [roadmap.md](roadmap.md). |
-| A completed login in a browser, and a TUI on screen | **Never done.** The proxy is up, forwards to the real Casdoor with the right `redirect_uri`, strips forged identity headers, and gates `/ws` — all measured. No human has completed the round trip, and no WebSocket upgrade has crossed the proxy. |
-| The auth recipe in [auth.md](auth.md) | **Mostly.** The sidecar manifest is **applied and running at 2/2**; the header behaviour, the header-stripping and the redirect are measured. A completed browser login is not. |
+| A completed login in a browser, and a TUI on screen | **Done, 2026-10-15.** Real cluster, real Casdoor, WebSocket across the proxy, live `tmux` session `(attached)`. See the section above. |
+| The auth recipe in [auth.md](auth.md) | **Done, end to end.** Sidecar applied and running at `2/2`; header behaviour, header-stripping, redirect, session storage and a full browser login all measured. |
 | **Whether the auth header covers the WebSocket** | **Open, 2026-10-15.** `GET /` without the header gives `407`; `GET /ws` without it gives `101`. Whether the unauthenticated upgrade becomes a usable session is **undetermined** — see the section above. `deploy/k8s/core.yaml` relies on that header as one of two layers. |
 | Multi-arch buildx (`./build.sh --multiarch`) | **Never run.** The published index was assembled with `docker manifest create` from two single-arch builds, not by a buildx manifest-list build. The result is equivalent; the code path is untested. |
 | Behaviour under a real workload | **Done, 2026-10-15.** An agent was given a task using its file tools; it wrote where it should and was refused where it should not. See the section above. |
