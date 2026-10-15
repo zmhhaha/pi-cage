@@ -65,42 +65,54 @@ project advertises, and that should be a decision, not a side effect.
 
 ---
 
-## 3. Exercise `run` and `json` — **partly done, 2026-10-15**
+## 3. Exercise `run` and `json` — **done, 2026-10-15**
 
-**Why.** `serve` has been exercised on a real cluster (the pane shows Pi's TUI).
+**Why.** `serve` had been exercised on a real cluster (the pane shows Pi's TUI).
 **`run` and `json` had never been run at all.** They appeared in the README as
 supported modes on the strength of upstream's documentation alone, which is
 exactly the kind of unverified claim this project exists to avoid.
 
-**Done without a credential, because the failure path is half the contract.**
-Both modes were run against the published image with no API key configured:
+**Done, in two passes.**
+
+**The failure path first, because it needs no credential and is half the contract.**
 
 | | exit | stdout | stderr |
 |---|---|---|---|
-| `run "reply with the single word ok"` | `1` | **0 bytes** | `No API key found for the selected model.` |
-| `json "…"` | `1` | **1 line of valid JSON** | the same |
+| `run "reply with the single word ok"`, no API key | `1` | **0 bytes** | `No API key found for the selected model.` |
+| `json "…"`, no API key | `1` | **1 line of valid JSON** | the same |
 | an unknown mode | `1` | nothing | the usage block |
 
-Three real facts, none of them previously established:
+**Then the success path**, in the `pi` namespace deployment with the key delivered
+from Vault:
 
-- **A failed `run` leaves stdout empty.** The mode exists to put the agent's final
-  text on stdout so it can be piped, and a diagnostic leaking into that stream
-  would corrupt every consumer. Diagnostics go to stderr, and `die()` and `log()`
-  in `pi-server` both write there by construction.
-- **`json` emits valid JSONL**, and the first record survives a failure:
-  `{"type":"session","version":3,"id":"…","timestamp":"…","cwd":"/workspace"}`.
-  A consumer therefore gets a session line before the error, not a broken stream.
-- **`run` and `json` dispatch correctly at all.** They reach the model call and
-  fail there, which is a different claim from "the modes are wired up".
+| | exit | stdout | stderr |
+|---|---|---|---|
+| `run "reply with the single word ok"` | **`0`** | **`ok`** (3 bytes) | **0 bytes** |
+| `json "…"` | **`0`** | **15 lines, all valid JSON** | **0 bytes** |
 
-Also settled: an unknown mode exits **1**, not 2. `pi-server` routes every fatal
-path through `die()`, so all of its failures share one code; the 2 in `build.sh`
-is that script's own convention for a usage error. Not a discrepancy.
+The `json` stream is complete and well formed:
 
-**Still open: the success path.** No model call has been made, so "prints `ok` and
-exits 0" remains untested. That needs a provider credential and nothing else —
-and the deployment is already waiting for one at
-`panghu_chat/pi`.
+```
+session → agent_start → turn_start
+  → (message_start → message_update → message_end) × 3
+  → turn_end → agent_end → agent_settled
+```
+
+**And a real task, which is what this item was really about.** The agent was asked
+to write a file inside the workspace and attempt one outside it:
+
+```
+WORKSPACE=pi-cage ran here
+OUTSIDE=EROFS: read-only file system, open '/nope.txt'
+```
+
+It wrote where it should, was refused where it should not, and **reported the real
+error rather than a plausible one**. Checked independently of its own account — the
+file's contents, the absence of `/nope.txt`, and a failing `touch` on the root
+filesystem. That is the project's central claim occurring rather than being
+asserted.
+
+Details in [verification-log.md](verification-log.md).
 
 ---
 

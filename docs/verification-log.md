@@ -495,8 +495,90 @@ fatal path through `die()`, so all of its failures share a code; the `2` in
 `build.sh` is that script's own convention for a usage error. Not a discrepancy,
 and worth writing down because it looked like one.
 
-**Still unverified:** the success path. "Prints `ok` and exits 0" remains untested
-and still needs a credential.
+**Superseded the same day** — see the next section. A credential became available
+and the success path was exercised.
+
+---
+
+## 2026-10-15 — The first real model calls, and the boundary holding under a real task
+
+Run in the `pi` namespace deployment on the 6-node cluster, with
+`DEEPSEEK_API_KEY` delivered from Vault through an ExternalSecret. **These are the
+first model calls this image has ever made**, and the first time it has been given
+work to do rather than merely started.
+
+### `run` — success path
+
+```
+pi-server run "reply with the single word ok"
+  exit code : 0
+  stdout    : "ok"   (3 bytes)
+  stderr    :        (0 bytes)
+```
+
+Exactly the acceptance criterion roadmap item 3 was written against. stdout
+carries the agent's text and nothing else; a diagnostic leaking there would
+corrupt any pipeline built on this mode.
+
+### `json` — success path
+
+```
+  exit code : 0
+  stdout    : 15 lines, 20,570 bytes — 15 valid JSON, 0 invalid
+  stderr    : 0 bytes
+```
+
+Event types, in order:
+
+```
+session → agent_start → turn_start
+  → (message_start → message_update → message_end) × 3
+  → turn_end → agent_end → agent_settled
+```
+
+A complete, well-formed JSONL stream ending in `agent_settled`. Parseable line by
+line, which is the whole contract of this mode.
+
+### A real task, and the boundary holding
+
+Nothing here had ever been given work to do. The prompt asked for two things: write
+a file inside the workspace, and attempt to write one outside it.
+
+```
+  WORKSPACE=pi-cage ran here
+  OUTSIDE=EROFS: read-only file system, open '/nope.txt'
+```
+
+**The agent hit the read-only root filesystem itself and reported the real error.**
+That is the deployment's central claim happening rather than being asserted: given
+full tool access, the agent physically cannot write outside its workspace.
+
+**Checked independently of the model's own account**, because a self-report is not
+evidence:
+
+| Probe from outside the container | Result |
+|---|---|
+| `/workspace/proof.txt` exists | yes, contents exactly `pi-cage ran here` |
+| `/nope.txt` exists | no |
+| root filesystem writable | no — `touch` fails |
+
+### What else this incidentally confirmed
+
+- **Egress works through the namespace policy.** The model API was reachable over
+  public TCP 443 under `web-egress` while every internal range stayed denied. A
+  policy mistake here would have shown up as a failed call, not a silent one.
+- **The workspace PVC is writable by uid 10001.** The `fsGroup`/`fsGroupChangePolicy`
+  arrangement in `core.yaml` does what it is there for.
+- **The read-only root plus explicit tmpfs mounts are sufficient.** No mode needed
+  a writable path outside `/workspace`, `/home/pi`, `/tmp` or `/run`.
+
+### Still not verified
+
+The **web terminal has never been opened in a browser**. The `pi-cage` container
+ran, but `oauth2-proxy` sat in `CreateContainerConfigError` for want of
+`secret/pi/oidc`, so nothing crossed the proxy: no login round trip, no WebSocket
+upgrade, no TUI in a browser. The modes exercised here are the two that do not go
+through it.
 
 ---
 
@@ -504,13 +586,13 @@ and still needs a credential.
 
 | Claim | Status |
 |---|---|
-| **Any model call** | **Never made.** No provider credential has ever been configured. The `run` and `json` *failure* paths are now exercised (above); their success paths are not, and the TUI still starts and reports "No models available". |
+| **Any model call** | **Done, 2026-10-15.** Both `run` and `json` succeed against `DEEPSEEK_API_KEY` delivered from Vault, and a real file-writing task with a boundary probe completed. See the section above. |
 | **`docker-compose.yml` works** | **It does not.** It publishes `127.0.0.1:7681:7681` while the container binds loopback — the same contradiction as the Kubernetes manifest, and the same fix does not apply cleanly. Options and their costs are in [roadmap.md](roadmap.md). |
-| `serve` through a real authenticating proxy, in a browser | **Never run.** The header mechanics are tested (see the section below), but no proxy has ever injected the header and no WebSocket upgrade has crossed a tunnel. |
-| The auth recipe in [auth.md](auth.md) | **Partly.** The header behaviour is measured and two `oauth2-proxy` misconfigurations were reproduced; the sidecar manifest has not been applied. |
+| `serve` through a real authenticating proxy, in a browser | **Never run.** The header mechanics are tested, and the sidecar deployment has now been stood up and its loopback property asserted — but `oauth2-proxy` never started, because `secret/pi/oidc` was never written. No login round trip, no WebSocket upgrade, no TUI in a browser. |
+| The auth recipe in [auth.md](auth.md) | **Partly.** The header behaviour is measured, two `oauth2-proxy` misconfigurations were reproduced, and the sidecar manifest has now been **applied** — its shape is verified. The full login flow is not. |
 | Multi-arch buildx (`./build.sh --multiarch`) | **Never run.** The published index was assembled with `docker manifest create` from two single-arch builds, not by a buildx manifest-list build. The result is equivalent; the code path is untested. |
-| Behaviour under a real workload | **Never run.** No agent has been given a task; only the startup path was exercised. |
-| Behaviour under attack | **Never attempted.** |
+| Behaviour under a real workload | **Done, 2026-10-15.** An agent was given a task using its file tools; it wrote where it should and was refused where it should not. See the section above. |
+| Behaviour under attack | **Never attempted.** An adversarial prompt — one instructing the agent to exfiltrate, or to look for a way out of the boundary — has never been tried. The EROFS refusal above was an incidental consequence of a task, not an adversarial test. |
 | **The release workflow has run** | **Never.** `.github/workflows/release.yml` has been written and read, not executed — no tag has been pushed since it existed. |
 | **A tagged release exists** | **None.** The SBOMs are committed rather than attached to a release, which is the weaker form of the acceptance criterion. |
 | **The published images carry OCI labels** | **They do not.** `Config.Labels` is `null` on both. The Dockerfile now sets them so the next build has them; these two images do not, and were deliberately not back-filled. |
