@@ -582,14 +582,87 @@ through it.
 
 ---
 
+---
+
+## 2026-10-15 — The deployed auth chain, and one open question about `/ws`
+
+Measured in the `panghu_chat/pi` deployment: `pi-cage` and `oauth2-proxy` as
+sidecars, `pi-oidc` delivered from Vault, Pod `2/2`.
+
+### The test that mattered, and passed
+
+`oauth2-proxy` sets `X-Auth-Request-Email` on what it forwards upstream. If it also
+forwarded a header the *client* supplied, then anything able to reach port 4180
+would bypass Casdoor by sending one line — and 4180 is what the public tunnel
+fronts. So it was worth trying to forge it:
+
+| Request to the proxy | Result |
+|---|---|
+| no header | `302` to the IdP |
+| forged `X-Auth-Request-Email` | `302` to the IdP |
+| forged `X-Auth-Request-User` | `302` to the IdP |
+| forged `X-Forwarded-User` | `302` to the IdP |
+| forged `X-Forwarded-Email` | `302` to the IdP |
+| both forged at once | `302` to the IdP |
+
+**`oauth2-proxy` strips client-supplied identity headers.** The bypass does not
+exist. An unauthenticated `/ws` through the proxy also returns `302`, so the
+terminal endpoint is behind the session like everything else.
+
+### One open question: the auth header on `/ws`
+
+Probing `ttyd` directly on its loopback port, under
+`PI_CAGE_AUTH_HEADER=X-Auth-Request-Email`:
+
+| Request | Result |
+|---|---|
+| `GET /` without the header | **`407 Proxy Auth Required`** |
+| `GET /` with the header | `200 OK`, 729,693 bytes |
+| `GET /ws` (Upgrade: websocket) without the header | **`101 Switching Protocols`**, 0 body bytes |
+| `GET /ws` with the header | **`101 Switching Protocols`**, 2 body bytes: `89 00` — a WebSocket ping |
+
+**The header check produces `407` on the HTTP path and `101` on the WebSocket
+path.** With the header, ttyd completes the handshake and starts pinging; without
+it, the upgrade is still granted and nothing follows within the observation
+window.
+
+**What this does not establish, and is not claimed:** that the unauthenticated
+upgrade yields a usable terminal. Attempts to drive ttyd's protocol far enough to
+see a command echoed back failed **in both cases**, including the authenticated
+one, so they could not distinguish a live session from a dead socket. The honest
+statement is that the two paths do not behave the same, and the consequence of
+that difference is **undetermined**.
+
+**Why it is worth recording rather than dropping.** This project's design states
+that the header is one of two layers protecting the terminal, and that claim is
+now known to hold on the HTTP path and to be unverified on the WebSocket path.
+`deploy/k8s/core.yaml` binds `0.0.0.0` and relies on `proxy-ingress` plus the
+header; if the header does not cover `/ws`, that manifest has one layer there
+rather than two. In the `panghu_chat/pi` deployment it is narrower still — ttyd is
+loopback-only and `oauth2-proxy` gates `/ws` at its own layer — so nothing outside
+the Pod reaches it either way. But the shipped manifest makes the stronger claim
+and should not, until this is settled.
+
+**Follow-up:** determine whether ttyd's `--auth-header` is meant to cover the
+WebSocket upgrade, ideally against ttyd's own source at the pinned version, and
+either document the gap in [THREAT-MODEL.md](../THREAT-MODEL.md) or stop relying
+on the header for that path.
+
+### Also confirmed
+
+The unauthenticated redirect carries the real client id and
+`redirect_uri=https://pi.panghuer.top/oauth2/callback`, so the Casdoor application
+is wired correctly. What remains untested is a completed login in a browser and a
+WebSocket upgrade crossing the proxy — those need a human with a browser session.
 ## Not yet verified
 
 | Claim | Status |
 |---|---|
 | **Any model call** | **Done, 2026-10-15.** Both `run` and `json` succeed against `DEEPSEEK_API_KEY` delivered from Vault, and a real file-writing task with a boundary probe completed. See the section above. |
 | **`docker-compose.yml` works** | **It does not.** It publishes `127.0.0.1:7681:7681` while the container binds loopback — the same contradiction as the Kubernetes manifest, and the same fix does not apply cleanly. Options and their costs are in [roadmap.md](roadmap.md). |
-| `serve` through a real authenticating proxy, in a browser | **Never run.** The header mechanics are tested, and the sidecar deployment has now been stood up and its loopback property asserted — but `oauth2-proxy` never started, because `secret/pi/oidc` was never written. No login round trip, no WebSocket upgrade, no TUI in a browser. |
-| The auth recipe in [auth.md](auth.md) | **Partly.** The header behaviour is measured, two `oauth2-proxy` misconfigurations were reproduced, and the sidecar manifest has now been **applied** — its shape is verified. The full login flow is not. |
+| A completed login in a browser, and a TUI on screen | **Never done.** The proxy is up, forwards to the real Casdoor with the right `redirect_uri`, strips forged identity headers, and gates `/ws` — all measured. No human has completed the round trip, and no WebSocket upgrade has crossed the proxy. |
+| The auth recipe in [auth.md](auth.md) | **Mostly.** The sidecar manifest is **applied and running at 2/2**; the header behaviour, the header-stripping and the redirect are measured. A completed browser login is not. |
+| **Whether the auth header covers the WebSocket** | **Open, 2026-10-15.** `GET /` without the header gives `407`; `GET /ws` without it gives `101`. Whether the unauthenticated upgrade becomes a usable session is **undetermined** — see the section above. `deploy/k8s/core.yaml` relies on that header as one of two layers. |
 | Multi-arch buildx (`./build.sh --multiarch`) | **Never run.** The published index was assembled with `docker manifest create` from two single-arch builds, not by a buildx manifest-list build. The result is equivalent; the code path is untested. |
 | Behaviour under a real workload | **Done, 2026-10-15.** An agent was given a task using its file tools; it wrote where it should and was refused where it should not. See the section above. |
 | Behaviour under attack | **Never attempted.** An adversarial prompt — one instructing the agent to exfiltrate, or to look for a way out of the boundary — has never been tried. The EROFS refusal above was an incidental consequence of a task, not an adversarial test. |
