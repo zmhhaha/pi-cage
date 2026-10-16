@@ -652,10 +652,65 @@ loopback-only and `oauth2-proxy` gates `/ws` at its own layer — so nothing out
 the Pod reaches it either way. But the shipped manifest makes the stronger claim
 and should not, until this is settled.
 
-**Follow-up:** determine whether ttyd's `--auth-header` is meant to cover the
-WebSocket upgrade, ideally against ttyd's own source at the pinned version, and
-either document the gap in [THREAT-MODEL.md](../THREAT-MODEL.md) or stop relying
-on the header for that path.
+### Resolved, 2026-10-16 — the header does cover `/ws`
+
+**The `101` above was an artifact of the probe, not a property of ttyd.** ttyd
+registers two libwebsockets protocols:
+
+```c
+static const struct lws_protocols protocols[] = {
+  {"http-only", callback_http, sizeof(struct pss_http), 0},
+  {"tty",       callback_tty,  sizeof(struct pss_tty),  0},
+};
+```
+
+Everything that makes a connection a *terminal session* lives on `tty`, including
+the auth check, which runs at handshake time in
+`LWS_CALLBACK_FILTER_PROTOCOL_CONNECTION`:
+
+```c
+if (!check_auth(wsi, pss)) return 1;                      // protocol.c:212
+if (strncmp(pss->path, endpoints.ws, n) != 0) return 1;   // protocol.c:218
+if (server->check_origin && !check_host_origin(wsi)) return 1;
+```
+
+Returning `1` denies the connection. The probe never sent
+`Sec-WebSocket-Protocol: tty`, so libwebsockets selected the first protocol,
+`http-only`, completed an upgrade under it, and **never entered `callback_tty` at
+all** — hence `101` with no auth and nothing behind it.
+
+ttyd's own client always asks for the right one. From the page it serves:
+
+```js
+new WebSocket(this.options.wsUrl, ["tty"]
+```
+
+With the subprotocol sent, the matrix is unambiguous:
+
+| Subprotocol | Header | Origin | Result | ttyd log |
+|---|---|---|---|---|
+| `tty` | present | correct | `101`, session stays open | `WS   /ws - 127.0.0.1, clients: 1` |
+| `tty` | absent | correct | connection dropped, no response | `W: User code denied connection` |
+| `tty` | empty | correct | connection dropped, no response | `W: User code denied connection` |
+| `tty` | present | wrong | connection dropped | `W: refuse to serve WS client from different origin due to the --check-origin option.` |
+| `tty` | present | absent | connection dropped | same `--check-origin` refusal |
+| *(none)* | any | — | `101` | **no ttyd log at all** — not a session |
+
+The authenticated row is the only one that reaches `LWS_CALLBACK_ESTABLISHED`, and
+it is the only one where ttyd logs a client. **`--auth-header` does cover the
+WebSocket path**, and `--check-origin` covers it independently.
+
+So the earlier caution was right to exist and wrong to persist:
+`deploy/k8s/core.yaml`'s two-layer claim holds for `/ws` as well as for `/`,
+and no gap needs documenting in [THREAT-MODEL.md](../THREAT-MODEL.md).
+
+**One correction to the method, since it cost two rounds.** The first attempt at
+the "wrong Origin" row appeared to pass, and the reason was the probe, not ttyd:
+`curl -H Origin:A -H Origin:B` sends **both** headers, ttyd matched the first, and
+the test measured nothing. A negative test has to be sure it is testing what it
+thinks it is.
+
+**Follow-up:** none. Closed.
 
 ### Also confirmed
 
@@ -738,12 +793,10 @@ used `X-Auth-Request-Email` except the file written for this project.
 
 ### Still open
 
-The `/ws` question above is unchanged and no longer blocking: a browser terminal
-works through the proxy, so the deployed path is fine. What remains unexplained is
-the direct observation that `ttyd` grants a WebSocket upgrade **without** the header
-when probed on loopback — `101` where the HTTP path gives `407`. In this deployment
-that path is unreachable, but the shipped `deploy/k8s/core.yaml` binds `0.0.0.0` and
-leans on the header, so it should not stay unexplained.
+The `/ws` question above is **resolved**: the header does cover the WebSocket path.
+A browser terminal works through the proxy, and the earlier `101` was a probe that
+omitted `Sec-WebSocket-Protocol: tty` and so never entered ttyd's `tty` protocol at
+all. See the resolution section.
 
 ## Not yet verified
 
@@ -753,7 +806,7 @@ leans on the header, so it should not stay unexplained.
 | **`docker-compose.yml` works** | **It does not.** It publishes `127.0.0.1:7681:7681` while the container binds loopback — the same contradiction as the Kubernetes manifest, and the same fix does not apply cleanly. Options and their costs are in [roadmap.md](roadmap.md). |
 | A completed login in a browser, and a TUI on screen | **Done, 2026-10-15.** Real cluster, real Casdoor, WebSocket across the proxy, live `tmux` session `(attached)`. See the section above. |
 | The auth recipe in [auth.md](auth.md) | **Done, end to end.** Sidecar applied and running at `2/2`; header behaviour, header-stripping, redirect, session storage and a full browser login all measured. |
-| **Whether the auth header covers the WebSocket** | **Open, 2026-10-15.** `GET /` without the header gives `407`; `GET /ws` without it gives `101`. Whether the unauthenticated upgrade becomes a usable session is **undetermined** — see the section above. `deploy/k8s/core.yaml` relies on that header as one of two layers. |
+| **Whether the auth header covers the WebSocket** | **Settled, 2026-10-16 — it does.** With `Sec-WebSocket-Protocol: tty`, a request without the header is denied outright (`User code denied connection`) and one with it establishes a session (`WS /ws ... clients: 1`). The earlier `101` came from probing without the subprotocol, which selected libwebsockets' `http-only` protocol and never reached ttyd's `tty` protocol. `deploy/k8s/core.yaml`'s two-layer claim holds. |
 | Multi-arch buildx (`./build.sh --multiarch`) | **Never run.** The published index was assembled with `docker manifest create` from two single-arch builds, not by a buildx manifest-list build. The result is equivalent; the code path is untested. |
 | Behaviour under a real workload | **Done, 2026-10-15.** An agent was given a task using its file tools; it wrote where it should and was refused where it should not. See the section above. |
 | Behaviour under attack | **Never attempted.** An adversarial prompt — one instructing the agent to exfiltrate, or to look for a way out of the boundary — has never been tried. The EROFS refusal above was an incidental consequence of a task, not an adversarial test. |

@@ -11,7 +11,7 @@ enforced by the container itself — the answer is: less than you would like.
 | Default bind | `127.0.0.1`. It refuses anything else without `PI_CAGE_ALLOW_PUBLIC=1`. |
 | Non-loopback bind | Refused **unless** an auth header is configured. Binding `0.0.0.0` with authentication turned off is not possible. |
 | `PI_CAGE_AUTH_HEADER` | Defaults to `X-Forwarded-Email`. Read with `-`, not `:-`, so **unset means required** and only an explicit empty value (`PI_CAGE_AUTH_HEADER=`) disables it. |
-| Header check | Performed by `ttyd` on **every** request, including the WebSocket upgrade. A request without it gets `407 Proxy Auth Required`. |
+| Header check | Performed by `ttyd` on **every** request, including the WebSocket upgrade. A request without it gets `407 Proxy Auth Required` on the HTTP path, and is refused at the handshake on the WebSocket path — verified against ttyd's own source, see below. |
 
 Both refusals are covered by [`verify-hardening.sh`](../verify-hardening.sh), which
 fails if they stop holding.
@@ -95,6 +95,46 @@ So the security of a deployment rests entirely on two things outside the contain
 This is why the [THREAT-MODEL](../THREAT-MODEL.md) calls the container a boundary
 and not a multi-tenant platform, and why `deploy/k8s/` ships a default-deny policy
 rather than relying on the header alone.
+
+### The WebSocket path is checked too, and the way to get this wrong is subtle
+
+Verified against ttyd 1.7.7's own source, because the obvious probe says otherwise.
+ttyd registers two libwebsockets protocols:
+
+```c
+static const struct lws_protocols protocols[] = {
+  {"http-only", callback_http, sizeof(struct pss_http), 0},
+  {"tty",       callback_tty,  sizeof(struct pss_tty),  0},
+};
+```
+
+The auth check lives on `tty`, in `LWS_CALLBACK_FILTER_PROTOCOL_CONNECTION`, and
+denying returns `1`:
+
+```c
+if (!check_auth(wsi, pss)) return 1;
+if (strncmp(pss->path, endpoints.ws, n) != 0) return 1;
+if (server->check_origin && !check_host_origin(wsi)) return 1;
+```
+
+**libwebsockets picks the protocol from `Sec-WebSocket-Protocol`, and if you do not
+send that header it picks `http-only`** — the first entry. A hand-rolled probe that
+omits it gets `101 Switching Protocols` **without the auth header**, and never
+reaches ttyd's terminal code at all. That looks alarming and means nothing.
+ttyd's own client always asks for the right one:
+
+```js
+new WebSocket(this.options.wsUrl, ["tty"]
+```
+
+With the subprotocol sent, the behaviour is what you would want: no header or an
+empty one drops the connection before any response (`User code denied connection`),
+and only a present header establishes a session (`WS   /ws - ..., clients: 1`).
+`--check-origin` refuses independently, which is why `deploy/k8s/core.yaml` sets it.
+
+**If you test this yourself, send `Sec-WebSocket-Protocol: tty`** — and note that
+`curl -H Origin:A -H Origin:B` sends *both* headers, so a negative Origin test that
+does that measures the wrong thing.
 
 ## Three settings that decide whether it works
 
