@@ -2,10 +2,11 @@
 #
 # pi-cage entrypoint.
 #
-# Three modes, one rule: never widen access by default.
+# Four modes, one rule: never widen access by default.
 #   serve  persistent tmux + Pi session behind a web terminal
 #   run    one-shot, final assistant text on stdout
 #   json   one-shot, JSONL event stream on stdout
+#   worker strict one-shot JSONL entry for an external task controller
 #
 # Anything else, call `pi` directly.
 
@@ -55,6 +56,7 @@ pi-cage — an isolation-first container for the Pi coding agent
   pi-server serve [--bind ADDR] [--port N]   persistent session + web terminal
   pi-server run  <prompt...>                 one-shot; final text on stdout
   pi-server json <prompt...>                 one-shot; JSONL events on stdout
+  pi-server worker <fixed-options> <prompt> strict single-task JSONL worker
   pi-server help
 
 Environment:
@@ -87,6 +89,9 @@ case "$cmd" in
   json)
     [ "$#" -gt 0 ] || die 'json needs a prompt'
     exec pi --mode json "$@"
+    ;;
+  worker)
+    exec /usr/local/bin/node /usr/local/lib/pi-cage/worker-cli.mjs "$@"
     ;;
   serve)
     ;;

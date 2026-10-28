@@ -61,11 +61,16 @@ APT_MIRROR="${APT_MIRROR:-}"
 # unpacked tarball or a copy inside another repository would otherwise record a
 # commit that has nothing to do with this image. Absent is honest; guessed is not.
 GIT_REVISION="${GIT_REVISION:-}"
-if [ -z "$GIT_REVISION" ]; then
-  _top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-  if [ -n "$_top" ] && [ "$_top" = "$(pwd -P)" ]; then
-    GIT_REVISION="$(git rev-parse HEAD)"
+_top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -n "$_top" ] && [ "$_top" = "$(pwd -P)" ]; then
+  _head="$(git rev-parse HEAD)"
+  _dirty="$(git status --porcelain --untracked-files=normal)"
+  if [ -n "$GIT_REVISION" ] && { [ "$GIT_REVISION" != "$_head" ] || [ -n "$_dirty" ]; }; then
+    printf 'build: error: GIT_REVISION does not identify this clean checkout\n' >&2
+    exit 1
   fi
+  # A local development build is allowed, but cannot claim its unmodified HEAD.
+  if [ -z "$GIT_REVISION" ] && [ -z "$_dirty" ]; then GIT_REVISION="$_head"; fi
 fi
 
 host_arch() { uname -m | sed 's/^x86_64$/amd64/; s/^aarch64$/arm64/'; }
@@ -73,6 +78,10 @@ PLATFORM="${PLATFORM:-linux/$(host_arch)}"
 
 die() { printf 'build: error: %s\n' "$*" >&2; exit 1; }
 run() { printf '+ %s\n' "$*" >&2; [ "$DRY_RUN" = 1 ] || "$@"; }
+
+if [ -n "$GIT_REVISION" ] && ! [[ "$GIT_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+  die 'GIT_REVISION must be a full lowercase Git commit or empty'
+fi
 
 # Only a real build needs a daemon. --dry-run is documented as "print the plan,
 # touch nothing", and needing Docker installed to print a plan is exactly the

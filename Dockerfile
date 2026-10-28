@@ -11,6 +11,13 @@ FROM ${NODE_IMAGE}
 
 ARG PI_PACKAGE=@earendil-works/pi-coding-agent@0.99.2
 ARG NPM_REGISTRY=https://registry.npmjs.org
+ARG GIT_REVISION=
+ARG BASE_IMAGE_NAME=
+ARG BASE_IMAGE_DIGEST=
+LABEL org.opencontainers.image.source="https://github.com/zmhhaha/pi-cage" \
+      org.opencontainers.image.revision="${GIT_REVISION}" \
+      org.opencontainers.image.base.name="${BASE_IMAGE_NAME}" \
+      org.opencontainers.image.base.digest="${BASE_IMAGE_DIGEST}"
 
 # --- runtime tooling --------------------------------------------------------
 # APT_MIRROR exists for the same reason this ecosystem carries NPM_REGISTRY and
@@ -114,9 +121,12 @@ RUN set -eux; \
 
 # --- build-time gates -------------------------------------------------------
 COPY docker/assert-image.sh /usr/local/lib/pi-cage/assert-image.sh
+COPY docker/worker-cli.mjs /usr/local/lib/pi-cage/worker-cli.mjs
 RUN set -eux; \
     chmod 0755 /usr/local/lib/pi-cage/assert-image.sh; \
-    /usr/local/lib/pi-cage/assert-image.sh
+    /usr/local/lib/pi-cage/assert-image.sh; \
+    node --input-type=module -e 'import { writeFileSync } from "node:fs"; import { runtimeMetadata } from "/usr/local/lib/pi-cage/worker-cli.mjs"; writeFileSync("/usr/local/lib/pi-cage/runtime.json", JSON.stringify(runtimeMetadata(process.argv[1] || null)) + "\n", {mode: 0o644});' "${GIT_REVISION}"; \
+    node /usr/local/lib/pi-cage/worker-cli.mjs --version
 
 # --- unprivileged runtime user ---------------------------------------------
 ARG PI_UID=10001

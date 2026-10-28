@@ -138,9 +138,56 @@ The full map, by layer, with the projects this project has learned from, is in
 | `pi-server serve` | Persistent `tmux` session running `pi`, exposed through `ttyd` | Only via the port you bind |
 | `pi-server run "<prompt>"` | One-shot. Final assistant text on stdout, non-zero exit on failure | No |
 | `pi-server json "<prompt>"` | One-shot. JSONL event stream on stdout | No |
+| `pi-server worker <options> <prompt>` | Strict single-task JSONL entry for a job controller | No |
 | `pi ...` | The raw CLI, for anything else | No |
 
 `serve` binds `127.0.0.1` unless you explicitly opt out, and it refuses to start with authentication disabled on a public bind. This is deliberate fail-closed behaviour, not a bug.
+
+### Business task workers
+
+The repository-owned entry `/usr/local/lib/pi-cage/worker-cli.mjs` supports an
+external job service such as `agent-service`. It loads the fixed installed
+`@earendil-works/pi-coding-agent` **0.99.2** CLI in the same Node process. It accepts
+an isolated `--version` probe, or one JSON print task with explicit provider and
+model, no saved session, and all automatic resource discovery disabled:
+
+```bash
+node /usr/local/lib/pi-cage/worker-cli.mjs \
+  --print --mode json --no-session --no-extensions --no-skills \
+  --no-prompt-templates --no-themes --no-context-files --offline \
+  --provider task-proxy --model fixed-model --tools read,write \
+  @/work/task.md
+```
+
+The controller supplies a fresh working directory and private HOME, the task's
+model configuration and short-lived credential, and any explicitly approved
+`--extension` or `--skill` paths. The entry rejects interactive/RPC/session
+options and extra prompts. It does not discover a different executable through
+PATH or environment settings. A controller may invoke Node with its own fixed
+`--import` preload for bounded JSONL transport; no `NODE_OPTIONS` is needed.
+`pi-server worker` calls this same entry. Existing `serve`, `run`, and `json`
+modes keep their existing behavior.
+
+Builds record OCI source/revision labels and
+`/usr/local/lib/pi-cage/runtime.json`, with `schema_version`, `repository`,
+`revision`, `package`, `version`, and `entrypoint`. The package fields are checked
+against the installed package. A clean Git build records its full commit;
+unidentified or dirty source records a null metadata revision and an empty OCI
+revision. An explicit revision that conflicts with a local checkout is rejected.
+Consumers should pin the image digest and require the expected source revision.
+
+A derived `agent-service` image retains its own trusted PID 1 controller, unique
+task UID allocation, read-only input mounts, process-stop verification, output
+collection, and network policy. The model process runs after that controller
+drops its privileges. This integration does not inherit the standalone image's
+fixed UID 10001 or claim that standalone-container checks prove the derived
+worker's isolation; the final worker image and deployment require their own
+verification.
+
+Run the entry's offline contract tests with `node --test tests/worker-cli.test.mjs`.
+They use a local fake installed CLI and make no model requests. They verify entry
+selection, argument rejection, metadata, and preload continuity; they do not
+establish real model/tool compatibility or business-task acceptance.
 
 ---
 
